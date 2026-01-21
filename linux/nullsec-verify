@@ -1,0 +1,105 @@
+#!/bin/bash
+#
+# NullSec Linux System Verification & Snapshot Preparation
+# bad-antics development
+#
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+CYAN='\033[0;36m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+echo ""
+echo -e "${CYAN}NULLSEC LINUX - SYSTEM VERIFICATION${NC}"
+echo -e "${CYAN}bad-antics development${NC}"
+echo ""
+
+PASS=0
+FAIL=0
+
+check() {
+    local desc="$1"
+    local cmd="$2"
+    
+    if eval "$cmd" > /dev/null 2>&1; then
+        echo -e "  ${GREEN}[+]${NC} $desc"
+        ((PASS++))
+    else
+        echo -e "  ${RED}[-]${NC} $desc"
+        ((FAIL++))
+    fi
+}
+
+echo -e "${YELLOW}HOSTNAME & NETWORK${NC}"
+check "Hostname is 'nullsec'" "[[ \$(hostname) == 'nullsec' ]]"
+check "Hostname resolves correctly" "ping -c1 nullsec"
+check "/etc/hostname correct" "grep -q 'nullsec' /etc/hostname"
+check "/etc/hosts has nullsec" "grep -q 'nullsec' /etc/hosts"
+
+echo ""
+echo -e "${YELLOW}SYSTEM BRANDING${NC}"
+check "/etc/os-release branded" "grep -q 'NullSec' /etc/os-release"
+check "/etc/issue branded" "grep -q 'NullSec' /etc/issue"
+check "/etc/lsb-release branded" "grep -q 'NullSec' /etc/lsb-release"
+check "/etc/motd branded" "grep -q 'NullSec' /etc/motd"
+check "GRUB distributor is NullSec" "grep -q 'GRUB_DISTRIBUTOR=\"NullSec\"' /etc/default/grub"
+
+echo ""
+echo -e "${YELLOW}GRUB & BOOT${NC}"
+check "GRUB theme exists" "[[ -f /boot/grub/themes/nullsec/theme.txt ]]"
+check "GRUB background exists" "[[ -f /boot/grub/themes/nullsec/background.png ]]"
+check "GRUB config references theme" "grep -q 'nullsec/theme.txt' /etc/default/grub"
+
+echo ""
+echo -e "${YELLOW}USER CUSTOMIZATION${NC}"
+check "Neofetch config exists" "[[ -f ~/.config/neofetch/config.conf ]]"
+check "Neofetch shows NullSec" "grep -q 'NullSec\|nullsec' ~/.config/neofetch/config.conf"
+check "Bashrc has NullSec commands" "grep -q 'NULLSEC' ~/.bashrc"
+check "Homepage exists" "[[ -f ~/.local/share/nullsec/homepage.html ]]"
+check "Wallpaper selector exists" "[[ -f ~/.local/bin/nullsec-wallpaper ]]"
+check "Wallpapers generated" "[[ \$(ls ~/Pictures/wallpapers/nullsec/*.png 2>/dev/null | wc -l) -ge 5 ]]"
+
+echo ""
+echo -e "${YELLOW}BROWSER SETUP${NC}"
+check "Firefox user.js exists" "ls ~/.mozilla/firefox/*/user.js 2>/dev/null | head -1 | grep -q user.js"
+check "Firefox homepage set" "grep -rq 'nullsec/homepage.html' ~/.mozilla/firefox/ 2>/dev/null"
+
+echo ""
+echo -e "${YELLOW}SERVICES${NC}"
+check "Lock-on-suspend service exists" "[[ -f /etc/systemd/system/lock-on-suspend@.service ]]"
+check "Lock-on-suspend enabled" "systemctl is-enabled lock-on-suspend@antics.service 2>/dev/null | grep -q 'enabled'"
+
+echo ""
+echo -e "${YELLOW}QUICK COMMANDS${NC}"
+check "starwars alias exists" "grep -q 'alias starwars' ~/.bashrc"
+check "nullsec-wallpaper alias" "grep -q 'nullsec-wallpaper' ~/.bashrc"
+check "nstools alias exists" "grep -q 'nstools' ~/.bashrc"
+check "a0 (Agent Zero) alias" "grep -q 'alias a0=' ~/.bashrc"
+
+echo ""
+echo -e "${YELLOW}BACKUP & RESTORE${NC}"
+check "Restore point exists" "ls /var/backups/nullsec-restore/*.tar.gz 2>/dev/null | head -1 | grep -q tar.gz"
+
+echo ""
+echo -e "  ${GREEN}Passed: $PASS${NC}  |  ${RED}Failed: $FAIL${NC}"
+echo ""
+
+if [[ $FAIL -eq 0 ]]; then
+    echo -e "  ${GREEN}[+] ALL CHECKS PASSED - READY FOR SNAPSHOT${NC}"
+    echo ""
+    echo "  Snapshot Preparation:"
+    echo "  - Clear browser history/cache (optional)"
+    echo "  - Clear terminal history: history -c && rm ~/.bash_history"
+    echo "  - Clean package cache: sudo apt clean"
+    echo "  - Remove orphaned packages: sudo apt autoremove"
+    echo "  - Clear temp files: sudo rm -rf /tmp/*"
+    echo ""
+    echo "  Ready commands:"
+    echo -e "  ${CYAN}sudo apt clean && sudo apt autoremove -y${NC}"
+    echo -e "  ${CYAN}sudo rm -rf /tmp/* /var/tmp/*${NC}"
+    echo ""
+else
+    echo -e "  ${YELLOW}[!] Some checks failed - review issues above${NC}"
+    echo ""
+fi

@@ -1,0 +1,554 @@
+#!/usr/bin/env python3
+"""
+NullSec Proxy - Secure Proxy Chain Manager
+==========================================
+Manage Tor, proxychains, and VPN connections for anonymous operations.
+
+(c) bad-antics development
+"""
+
+import os
+import sys
+import subprocess
+import socket
+import time
+import json
+import argparse
+import threading
+from pathlib import Path
+from typing import Optional, List, Dict
+
+# ============================================================================
+# Colors
+# ============================================================================
+
+class C:
+    RST = '\033[0m'
+    BLD = '\033[1m'
+    DIM = '\033[2m'
+    RED = '\033[0;31m'
+    GREEN = '\033[0;32m'
+    YELLOW = '\033[0;33m'
+    CYAN = '\033[0;36m'
+
+# ============================================================================
+# Configuration
+# ============================================================================
+
+VERSION = '1.0.0'
+CONFIG_DIR = Path.home() / '.config' / 'nullsec-proxy'
+CONFIG_FILE = CONFIG_DIR / 'config.json'
+
+DEFAULT_CONFIG = {
+    'tor': {
+        'enabled': True,
+        'socks_port': 9050,
+        'control_port': 9051,
+        'dns_port': 5353,
+    },
+    'proxychains': {
+        'enabled': True,
+        'dynamic_chain': True,
+        'proxy_dns': True,
+        'tcp_read_timeout': 15000,
+        'tcp_connect_timeout': 8000,
+    },
+    'vpn': {
+        'provider': '',
+        'config_dir': '/etc/openvpn/client',
+    },
+    'proxies': [
+        {'type': 'socks5', 'host': '127.0.0.1', 'port': 9050},
+    ],
+    'check_urls': [
+        'https://check.torproject.org/api/ip',
+        'https://api.ipify.org?format=json',
+        'https://ifconfig.me/all.json',
+    ]
+}
+
+# ============================================================================
+# Tor Management
+# ============================================================================
+
+class TorManager:
+    """Manage Tor service and circuits."""
+    
+    def __init__(self, config: dict):
+        self.config = config
+        self.socks_port = config.get('socks_port', 9050)
+        self.control_port = config.get('control_port', 9051)
+    
+    def is_running(self) -> bool:
+        """Check if Tor is running."""
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            result = sock.connect_ex(('127.0.0.1', self.socks_port))
+            sock.close()
+            return result == 0
+        except Exception:
+            return False
+    
+    def start(self) -> bool:
+        """Start Tor service."""
+        if self.is_running():
+            return True
+        
+        try:
+            subprocess.run(['sudo', 'systemctl', 'start', 'tor'], 
+                          capture_output=True, check=True)
+            time.sleep(2)
+            return self.is_running()
+        except subprocess.CalledProcessError:
+            # Try starting manually
+            try:
+                subprocess.Popen(['tor'], stdout=subprocess.DEVNULL, 
+                               stderr=subprocess.DEVNULL)
+                time.sleep(3)
+                return self.is_running()
+            except Exception:
+                return False
+    
+    def stop(self) -> bool:
+        """Stop Tor service."""
+        try:
+            subprocess.run(['sudo', 'systemctl', 'stop', 'tor'], 
+                          capture_output=True)
+            return True
+        except Exception:
+            return False
+    
+    def new_identity(self) -> bool:
+        """Request new Tor identity (new circuit)."""
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.connect(('127.0.0.1', self.control_port))
+            
+            # Authenticate
+            sock.send(b'AUTHENTICATE ""\r\n')
+            response = sock.recv(1024)
+            
+            if b'250' in response:
+                # Request new identity
+                sock.send(b'SIGNAL NEWNYM\r\n')
+                response = sock.recv(1024)
+                sock.close()
+                return b'250' in response
+            
+            sock.close()
+            return False
+        except Exception:
+            return False
+    
+    def get_circuit_info(self) -> List[Dict]:
+        """Get current Tor circuit information."""
+        circuits = []
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.connect(('127.0.0.1', self.control_port))
+            
+            sock.send(b'AUTHENTICATE ""\r\n')
+            sock.recv(1024)
+            
+            sock.send(b'GETINFO circuit-status\r\n')
+            response = sock.recv(4096).decode('utf-8', errors='replace')
+            
+            for line in response.split('\n'):
+                if line.startswith(' ') and 'BUILT' in line:
+                    parts = line.strip().split()
+                    if len(parts) >= 3:
+                        circuits.append({
+                            'id': parts[0],
+                            'status': parts[1] if len(parts) > 1 else 'unknown',
+                            'path': parts[2] if len(parts) > 2 else ''
+                        })
+            
+            sock.close()
+        except Exception:
+            pass
+        
+        return circuits
+
+
+# ============================================================================
+# Proxychains Management
+# ============================================================================
+
+class ProxychainsManager:
+    """Manage proxychains configuration."""
+    
+    CONFIG_PATH = Path('/etc/proxychains4.conf')
+    USER_CONFIG = Path.home() / '.proxychains' / 'proxychains.conf'
+    
+    def __init__(self, config: dict, proxies: List[Dict]):
+        self.config = config
+        self.proxies = proxies
+    
+    def generate_config(self) -> str:
+        """Generate proxychains configuration."""
+        lines = [
+            '# Proxychains configuration',
+            '# Generated by NullSec Proxy',
+            '',
+        ]
+        
+        if self.config.get('dynamic_chain'):
+            lines.append('dynamic_chain')
+        else:
+            lines.append('strict_chain')
+        
+        if self.config.get('proxy_dns'):
+            lines.append('proxy_dns')
+        
+        lines.extend([
+            '',
+            f"tcp_read_time_out {self.config.get('tcp_read_timeout', 15000)}",
+            f"tcp_connect_time_out {self.config.get('tcp_connect_timeout', 8000)}",
+            '',
+            '[ProxyList]',
+        ])
+        
+        for proxy in self.proxies:
+            proxy_type = proxy.get('type', 'socks5')
+            host = proxy.get('host', '127.0.0.1')
+            port = proxy.get('port', 9050)
+            user = proxy.get('user', '')
+            password = proxy.get('password', '')
+            
+            if user and password:
+                lines.append(f'{proxy_type} {host} {port} {user} {password}')
+            else:
+                lines.append(f'{proxy_type} {host} {port}')
+        
+        return '\n'.join(lines)
+    
+    def write_config(self) -> bool:
+        """Write configuration file."""
+        try:
+            self.USER_CONFIG.parent.mkdir(parents=True, exist_ok=True)
+            self.USER_CONFIG.write_text(self.generate_config())
+            return True
+        except Exception:
+            return False
+    
+    def run_command(self, command: List[str]) -> subprocess.CompletedProcess:
+        """Run command through proxychains."""
+        self.write_config()
+        full_cmd = ['proxychains4', '-f', str(self.USER_CONFIG)] + command
+        return subprocess.run(full_cmd)
+
+
+# ============================================================================
+# VPN Management
+# ============================================================================
+
+class VPNManager:
+    """Manage VPN connections."""
+    
+    def __init__(self, config: dict):
+        self.config = config
+        self.config_dir = Path(config.get('config_dir', '/etc/openvpn/client'))
+    
+    def list_configs(self) -> List[str]:
+        """List available VPN configurations."""
+        configs = []
+        if self.config_dir.exists():
+            configs = [f.stem for f in self.config_dir.glob('*.ovpn')]
+            configs.extend([f.stem for f in self.config_dir.glob('*.conf')])
+        return configs
+    
+    def connect(self, config_name: str) -> bool:
+        """Connect to VPN."""
+        config_file = None
+        
+        for ext in ['.ovpn', '.conf']:
+            path = self.config_dir / f'{config_name}{ext}'
+            if path.exists():
+                config_file = path
+                break
+        
+        if not config_file:
+            return False
+        
+        try:
+            subprocess.Popen([
+                'sudo', 'openvpn', '--config', str(config_file),
+                '--daemon', f'nullsec-vpn-{config_name}'
+            ])
+            return True
+        except Exception:
+            return False
+    
+    def disconnect(self) -> bool:
+        """Disconnect VPN."""
+        try:
+            subprocess.run(['sudo', 'killall', 'openvpn'], capture_output=True)
+            return True
+        except Exception:
+            return False
+    
+    def is_connected(self) -> bool:
+        """Check if VPN is connected."""
+        try:
+            result = subprocess.run(['pgrep', 'openvpn'], capture_output=True)
+            return result.returncode == 0
+        except Exception:
+            return False
+
+
+# ============================================================================
+# IP Checking
+# ============================================================================
+
+def check_ip(url: str, use_proxy: bool = False) -> Optional[Dict]:
+    """Check current IP address."""
+    try:
+        import urllib.request
+        import ssl
+        
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        
+        if use_proxy:
+            proxy = urllib.request.ProxyHandler({
+                'http': 'socks5h://127.0.0.1:9050',
+                'https': 'socks5h://127.0.0.1:9050'
+            })
+            opener = urllib.request.build_opener(proxy)
+        else:
+            opener = urllib.request.build_opener()
+        
+        req = urllib.request.Request(url)
+        req.add_header('User-Agent', 'NullSec-Proxy/1.0')
+        
+        with opener.open(req, timeout=10) as response:
+            data = response.read().decode('utf-8')
+            return json.loads(data)
+    
+    except Exception as e:
+        return {'error': str(e)}
+
+
+def check_anonymity() -> Dict:
+    """Check current anonymity status."""
+    result = {
+        'real_ip': None,
+        'proxy_ip': None,
+        'tor_detected': False,
+        'vpn_detected': False,
+    }
+    
+    # Get real IP (without proxy)
+    real = check_ip('https://api.ipify.org?format=json', use_proxy=False)
+    if real and 'ip' in real:
+        result['real_ip'] = real['ip']
+    
+    # Get proxy IP
+    proxy = check_ip('https://api.ipify.org?format=json', use_proxy=True)
+    if proxy and 'ip' in proxy:
+        result['proxy_ip'] = proxy['ip']
+    
+    # Check Tor
+    tor_check = check_ip('https://check.torproject.org/api/ip', use_proxy=True)
+    if tor_check and tor_check.get('IsTor'):
+        result['tor_detected'] = True
+    
+    # Check if IPs differ (VPN/proxy working)
+    if result['real_ip'] and result['proxy_ip']:
+        result['vpn_detected'] = result['real_ip'] != result['proxy_ip']
+    
+    return result
+
+
+# ============================================================================
+# User Interface
+# ============================================================================
+
+def print_banner():
+    """Print banner."""
+    print(f"""
+  {C.GREEN}╔═══════════════════════════════════════╗{C.RST}
+  {C.GREEN}║{C.RST}    {C.BLD}NullSec Proxy Manager{C.RST}             {C.GREEN}║{C.RST}
+  {C.GREEN}║{C.RST}    {C.DIM}Tor • Proxychains • VPN{C.RST}          {C.GREEN}║{C.RST}
+  {C.GREEN}╚═══════════════════════════════════════╝{C.RST}
+    """)
+
+
+def print_status(tor: TorManager, vpn: VPNManager):
+    """Print current status."""
+    print(f"\n  {C.BLD}Status:{C.RST}")
+    
+    tor_status = f"{C.GREEN}Running{C.RST}" if tor.is_running() else f"{C.RED}Stopped{C.RST}"
+    vpn_status = f"{C.GREEN}Connected{C.RST}" if vpn.is_connected() else f"{C.RED}Disconnected{C.RST}"
+    
+    print(f"  {C.CYAN}Tor:{C.RST}      {tor_status}")
+    print(f"  {C.CYAN}VPN:{C.RST}      {vpn_status}")
+    
+    # Check anonymity
+    print(f"\n  {C.DIM}Checking anonymity...{C.RST}")
+    anon = check_anonymity()
+    
+    print(f"\n  {C.BLD}IP Addresses:{C.RST}")
+    print(f"  {C.CYAN}Real IP:{C.RST}   {anon.get('real_ip', 'unknown')}")
+    print(f"  {C.CYAN}Proxy IP:{C.RST}  {anon.get('proxy_ip', 'unknown')}")
+    
+    if anon.get('tor_detected'):
+        print(f"  {C.GREEN}✓{C.RST} Tor exit node detected")
+    else:
+        print(f"  {C.YELLOW}!{C.RST} Not using Tor exit node")
+
+
+def interactive_menu(config: dict):
+    """Interactive menu."""
+    tor = TorManager(config.get('tor', {}))
+    vpn = VPNManager(config.get('vpn', {}))
+    proxychains = ProxychainsManager(
+        config.get('proxychains', {}),
+        config.get('proxies', [])
+    )
+    
+    while True:
+        print_banner()
+        
+        print(f"  {C.CYAN}[1]{C.RST} Check status")
+        print(f"  {C.CYAN}[2]{C.RST} Start Tor")
+        print(f"  {C.CYAN}[3]{C.RST} Stop Tor")
+        print(f"  {C.CYAN}[4]{C.RST} New Tor identity")
+        print(f"  {C.CYAN}[5]{C.RST} Connect VPN")
+        print(f"  {C.CYAN}[6]{C.RST} Disconnect VPN")
+        print(f"  {C.CYAN}[7]{C.RST} Run command through proxy")
+        print(f"  {C.CYAN}[8]{C.RST} Configure proxies")
+        print(f"  {C.CYAN}[q]{C.RST} Quit")
+        
+        choice = input(f"\n  {C.GREEN}>{C.RST} ").strip().lower()
+        
+        if choice == '1':
+            print_status(tor, vpn)
+            input(f"\n  {C.DIM}Press Enter to continue...{C.RST}")
+        
+        elif choice == '2':
+            print(f"  {C.CYAN}Starting Tor...{C.RST}")
+            if tor.start():
+                print(f"  {C.GREEN}✓{C.RST} Tor started")
+            else:
+                print(f"  {C.RED}✗{C.RST} Failed to start Tor")
+        
+        elif choice == '3':
+            if tor.stop():
+                print(f"  {C.GREEN}✓{C.RST} Tor stopped")
+            else:
+                print(f"  {C.RED}✗{C.RST} Failed to stop Tor")
+        
+        elif choice == '4':
+            print(f"  {C.CYAN}Requesting new identity...{C.RST}")
+            if tor.new_identity():
+                print(f"  {C.GREEN}✓{C.RST} New identity assigned")
+                time.sleep(2)
+                anon = check_anonymity()
+                print(f"  {C.CYAN}New IP:{C.RST} {anon.get('proxy_ip', 'unknown')}")
+            else:
+                print(f"  {C.RED}✗{C.RST} Failed to get new identity")
+        
+        elif choice == '5':
+            configs = vpn.list_configs()
+            if configs:
+                print(f"\n  {C.BLD}Available VPN configs:{C.RST}")
+                for i, c in enumerate(configs, 1):
+                    print(f"  {C.CYAN}[{i}]{C.RST} {c}")
+                idx = input(f"\n  {C.GREEN}Select:{C.RST} ").strip()
+                try:
+                    config_name = configs[int(idx) - 1]
+                    if vpn.connect(config_name):
+                        print(f"  {C.GREEN}✓{C.RST} Connecting to {config_name}...")
+                except (ValueError, IndexError):
+                    print(f"  {C.RED}✗{C.RST} Invalid selection")
+            else:
+                print(f"  {C.YELLOW}!{C.RST} No VPN configs found")
+        
+        elif choice == '6':
+            if vpn.disconnect():
+                print(f"  {C.GREEN}✓{C.RST} VPN disconnected")
+        
+        elif choice == '7':
+            cmd = input(f"  {C.GREEN}Command:{C.RST} ").strip()
+            if cmd:
+                print(f"\n  {C.CYAN}Running through proxychains...{C.RST}\n")
+                proxychains.run_command(cmd.split())
+        
+        elif choice == '8':
+            print(f"\n  {C.BLD}Current proxies:{C.RST}")
+            for i, p in enumerate(config.get('proxies', []), 1):
+                print(f"  {C.CYAN}[{i}]{C.RST} {p['type']} {p['host']}:{p['port']}")
+        
+        elif choice == 'q':
+            break
+
+
+def main():
+    """Main entry point."""
+    parser = argparse.ArgumentParser(
+        description='NullSec Proxy - Secure Proxy Chain Manager',
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    
+    parser.add_argument('--status', '-s', action='store_true',
+                        help='Show status')
+    parser.add_argument('--start-tor', action='store_true',
+                        help='Start Tor')
+    parser.add_argument('--stop-tor', action='store_true',
+                        help='Stop Tor')
+    parser.add_argument('--new-identity', '-n', action='store_true',
+                        help='Request new Tor identity')
+    parser.add_argument('--check-ip', '-i', action='store_true',
+                        help='Check current IP')
+    parser.add_argument('--run', '-r', nargs=argparse.REMAINDER,
+                        help='Run command through proxy')
+    
+    args = parser.parse_args()
+    
+    # Load config
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    if CONFIG_FILE.exists():
+        config = json.loads(CONFIG_FILE.read_text())
+    else:
+        config = DEFAULT_CONFIG
+        CONFIG_FILE.write_text(json.dumps(config, indent=2))
+    
+    tor = TorManager(config.get('tor', {}))
+    vpn = VPNManager(config.get('vpn', {}))
+    proxychains = ProxychainsManager(
+        config.get('proxychains', {}),
+        config.get('proxies', [])
+    )
+    
+    if args.status:
+        print_status(tor, vpn)
+    elif args.start_tor:
+        if tor.start():
+            print(f"  {C.GREEN}✓{C.RST} Tor started")
+        else:
+            print(f"  {C.RED}✗{C.RST} Failed to start Tor")
+    elif args.stop_tor:
+        if tor.stop():
+            print(f"  {C.GREEN}✓{C.RST} Tor stopped")
+    elif args.new_identity:
+        if tor.new_identity():
+            print(f"  {C.GREEN}✓{C.RST} New identity assigned")
+    elif args.check_ip:
+        anon = check_anonymity()
+        print(f"  {C.CYAN}Real IP:{C.RST}  {anon.get('real_ip', 'unknown')}")
+        print(f"  {C.CYAN}Proxy IP:{C.RST} {anon.get('proxy_ip', 'unknown')}")
+    elif args.run:
+        proxychains.run_command(args.run)
+    else:
+        try:
+            interactive_menu(config)
+        except KeyboardInterrupt:
+            pass
+    
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

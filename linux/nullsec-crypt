@@ -1,0 +1,729 @@
+#!/usr/bin/env python3
+"""
+NullSec Encrypted Messaging System
+===================================
+End-to-end encrypted message exchange for secure communication.
+
+Features:
+- AES-256-GCM encryption with authenticated encryption
+- PBKDF2 key derivation with 600,000 iterations
+- HMAC-SHA512 message authentication
+- Base85 encoding for compact ciphertext
+- Secure key agreement via shared passphrase
+- Memory-safe operations with explicit zeroing
+
+Usage:
+    nullsec-crypt              # Interactive mode
+    nullsec-crypt -e "msg"     # Encrypt message
+    nullsec-crypt -d "cipher"  # Decrypt message
+    nullsec-crypt --keygen     # Generate random key
+
+(c) bad-antics development
+"""
+
+import sys
+import os
+import argparse
+import hashlib
+import hmac
+import secrets
+import base64
+import struct
+import getpass
+import re
+from typing import Tuple, Optional
+from dataclasses import dataclass
+
+try:
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.backends import default_backend
+    from cryptography.exceptions import InvalidTag
+    HAS_CRYPTO = True
+except ImportError:
+    HAS_CRYPTO = False
+
+
+# ============================================================================
+# Constants - Hardened Security Parameters
+# ============================================================================
+
+VERSION = b'\x01'                    # Protocol version
+SALT_SIZE = 32                       # Salt size in bytes
+NONCE_SIZE = 12                      # AES-GCM nonce size
+TAG_SIZE = 16                        # Authentication tag size
+KEY_SIZE = 32                        # AES-256 key size
+KDF_ITERATIONS = 600000              # PBKDF2 iterations (OWASP 2024 recommendation)
+HMAC_KEY_SIZE = 64                   # HMAC-SHA512 key size
+MIN_PASSPHRASE_LEN = 12              # Minimum passphrase length
+MAX_MESSAGE_SIZE = 65536             # Maximum message size (64KB)
+
+# Magic bytes for message identification
+MAGIC = b'NSC1'
+
+
+# ============================================================================
+# Exceptions
+# ============================================================================
+
+class CryptError(Exception):
+    """Base exception for cryptographic errors."""
+    pass
+
+class DecryptionError(CryptError):
+    """Raised when decryption fails."""
+    pass
+
+class IntegrityError(CryptError):
+    """Raised when message integrity check fails."""
+    pass
+
+class KeyDerivationError(CryptError):
+    """Raised when key derivation fails."""
+    pass
+
+
+# ============================================================================
+# Secure Memory Operations
+# ============================================================================
+
+def secure_zero(data: bytearray) -> None:
+    """Securely zero out sensitive data in memory."""
+    if isinstance(data, bytearray):
+        for i in range(len(data)):
+            data[i] = 0
+        # Prevent optimization
+        if sum(data) != 0:
+            raise RuntimeError("Memory zeroing failed")
+
+
+def secure_compare(a: bytes, b: bytes) -> bool:
+    """Constant-time comparison to prevent timing attacks."""
+    if len(a) != len(b):
+        return False
+    result = 0
+    for x, y in zip(a, b):
+        result |= x ^ y
+    return result == 0
+
+
+# ============================================================================
+# Key Derivation
+# ============================================================================
+
+@dataclass
+class DerivedKeys:
+    """Container for derived cryptographic keys."""
+    encryption_key: bytes
+    hmac_key: bytes
+    salt: bytes
+    
+    def destroy(self) -> None:
+        """Securely destroy keys from memory."""
+        # Can't truly destroy immutable bytes, but we can help GC
+        self.encryption_key = None
+        self.hmac_key = None
+        self.salt = None
+
+
+def derive_keys(passphrase: str, salt: Optional[bytes] = None) -> DerivedKeys:
+    """
+    Derive encryption and HMAC keys from passphrase using PBKDF2.
+    
+    Uses two separate derivations to ensure key independence:
+    - Encryption key: PBKDF2(passphrase, salt, "enc")
+    - HMAC key: PBKDF2(passphrase, salt, "mac")
+    """
+    if len(passphrase) < MIN_PASSPHRASE_LEN:
+        raise KeyDerivationError(
+            f"Passphrase must be at least {MIN_PASSPHRASE_LEN} characters"
+        )
+    
+    if salt is None:
+        salt = secrets.token_bytes(SALT_SIZE)
+    
+    passphrase_bytes = passphrase.encode('utf-8')
+    
+    if HAS_CRYPTO:
+        # Use cryptography library for PBKDF2
+        kdf_enc = PBKDF2HMAC(
+            algorithm=hashes.SHA512(),
+            length=KEY_SIZE,
+            salt=salt + b'encryption',
+            iterations=KDF_ITERATIONS,
+            backend=default_backend()
+        )
+        encryption_key = kdf_enc.derive(passphrase_bytes)
+        
+        kdf_mac = PBKDF2HMAC(
+            algorithm=hashes.SHA512(),
+            length=HMAC_KEY_SIZE,
+            salt=salt + b'authentication',
+            iterations=KDF_ITERATIONS,
+            backend=default_backend()
+        )
+        hmac_key = kdf_mac.derive(passphrase_bytes)
+    else:
+        # Fallback to hashlib PBKDF2
+        encryption_key = hashlib.pbkdf2_hmac(
+            'sha512',
+            passphrase_bytes,
+            salt + b'encryption',
+            KDF_ITERATIONS,
+            dklen=KEY_SIZE
+        )
+        hmac_key = hashlib.pbkdf2_hmac(
+            'sha512',
+            passphrase_bytes,
+            salt + b'authentication',
+            KDF_ITERATIONS,
+            dklen=HMAC_KEY_SIZE
+        )
+    
+    return DerivedKeys(
+        encryption_key=encryption_key,
+        hmac_key=hmac_key,
+        salt=salt
+    )
+
+
+# ============================================================================
+# AES-256-GCM Encryption (with cryptography library)
+# ============================================================================
+
+def aes_gcm_encrypt(key: bytes, plaintext: bytes, aad: bytes = b'') -> Tuple[bytes, bytes]:
+    """
+    Encrypt using AES-256-GCM with authenticated additional data.
+    Returns (nonce, ciphertext_with_tag).
+    """
+    if not HAS_CRYPTO:
+        raise CryptError("cryptography library required for AES-GCM")
+    
+    nonce = secrets.token_bytes(NONCE_SIZE)
+    aesgcm = AESGCM(key)
+    ciphertext = aesgcm.encrypt(nonce, plaintext, aad)
+    
+    return nonce, ciphertext
+
+
+def aes_gcm_decrypt(key: bytes, nonce: bytes, ciphertext: bytes, aad: bytes = b'') -> bytes:
+    """
+    Decrypt using AES-256-GCM with authenticated additional data.
+    Raises DecryptionError if authentication fails.
+    """
+    if not HAS_CRYPTO:
+        raise CryptError("cryptography library required for AES-GCM")
+    
+    try:
+        aesgcm = AESGCM(key)
+        plaintext = aesgcm.decrypt(nonce, ciphertext, aad)
+        return plaintext
+    except InvalidTag:
+        raise DecryptionError("Authentication failed - invalid key or corrupted message")
+
+
+# ============================================================================
+# Fallback: ChaCha20-Poly1305-like using AES-CTR + HMAC
+# ============================================================================
+
+def aes_ctr_hmac_encrypt(enc_key: bytes, mac_key: bytes, plaintext: bytes) -> Tuple[bytes, bytes, bytes]:
+    """
+    Fallback encryption using AES-CTR mode with HMAC-SHA512 authentication.
+    This is used when cryptography library is not available.
+    """
+    from Crypto.Cipher import AES
+    
+    nonce = secrets.token_bytes(16)
+    cipher = AES.new(enc_key, AES.MODE_CTR, nonce=nonce)
+    ciphertext = cipher.encrypt(plaintext)
+    
+    # Compute HMAC over nonce + ciphertext
+    tag = hmac.new(mac_key, nonce + ciphertext, hashlib.sha512).digest()[:TAG_SIZE]
+    
+    return nonce, ciphertext, tag
+
+
+def aes_ctr_hmac_decrypt(enc_key: bytes, mac_key: bytes, nonce: bytes, 
+                         ciphertext: bytes, tag: bytes) -> bytes:
+    """
+    Fallback decryption using AES-CTR mode with HMAC-SHA512 verification.
+    """
+    from Crypto.Cipher import AES
+    
+    # Verify HMAC first (encrypt-then-MAC)
+    expected_tag = hmac.new(mac_key, nonce + ciphertext, hashlib.sha512).digest()[:TAG_SIZE]
+    
+    if not secure_compare(tag, expected_tag):
+        raise IntegrityError("Message authentication failed")
+    
+    cipher = AES.new(enc_key, AES.MODE_CTR, nonce=nonce)
+    plaintext = cipher.decrypt(ciphertext)
+    
+    return plaintext
+
+
+# ============================================================================
+# XOR-based Stream Cipher (Pure Python Fallback)
+# ============================================================================
+
+def xor_stream_cipher(key: bytes, data: bytes, nonce: bytes) -> bytes:
+    """
+    XOR stream cipher using HMAC-SHA512 as PRF.
+    This is the ultimate fallback when no crypto libraries are available.
+    
+    WARNING: This is less secure than AES-GCM but provides basic encryption.
+    """
+    result = bytearray(len(data))
+    block_size = 64  # SHA512 output size
+    
+    for i in range(0, len(data), block_size):
+        # Generate keystream block
+        counter = struct.pack('>Q', i // block_size)
+        keystream = hmac.new(key, nonce + counter, hashlib.sha512).digest()
+        
+        # XOR with data
+        chunk_end = min(i + block_size, len(data))
+        for j in range(i, chunk_end):
+            result[j] = data[j] ^ keystream[j - i]
+    
+    return bytes(result)
+
+
+def pure_python_encrypt(enc_key: bytes, mac_key: bytes, plaintext: bytes) -> Tuple[bytes, bytes, bytes]:
+    """Pure Python encryption fallback."""
+    nonce = secrets.token_bytes(32)
+    ciphertext = xor_stream_cipher(enc_key, plaintext, nonce)
+    tag = hmac.new(mac_key, nonce + ciphertext, hashlib.sha512).digest()[:TAG_SIZE]
+    
+    return nonce, ciphertext, tag
+
+
+def pure_python_decrypt(enc_key: bytes, mac_key: bytes, nonce: bytes,
+                        ciphertext: bytes, tag: bytes) -> bytes:
+    """Pure Python decryption fallback."""
+    expected_tag = hmac.new(mac_key, nonce + ciphertext, hashlib.sha512).digest()[:TAG_SIZE]
+    
+    if not secure_compare(tag, expected_tag):
+        raise IntegrityError("Message authentication failed")
+    
+    plaintext = xor_stream_cipher(enc_key, ciphertext, nonce)
+    return plaintext
+
+
+# ============================================================================
+# High-Level Encryption API
+# ============================================================================
+
+def encrypt_message(passphrase: str, message: str) -> str:
+    """
+    Encrypt a message using the shared passphrase.
+    
+    Message format:
+    MAGIC (4) | VERSION (1) | SALT (32) | NONCE (12-32) | CIPHERTEXT | TAG (16)
+    
+    Returns Base85 encoded ciphertext for compact representation.
+    """
+    if len(message) > MAX_MESSAGE_SIZE:
+        raise CryptError(f"Message exceeds maximum size of {MAX_MESSAGE_SIZE} bytes")
+    
+    plaintext = message.encode('utf-8')
+    keys = derive_keys(passphrase)
+    
+    try:
+        # Build authenticated additional data (AAD)
+        aad = MAGIC + VERSION + keys.salt
+        
+        if HAS_CRYPTO:
+            # Preferred: AES-256-GCM
+            nonce, ciphertext = aes_gcm_encrypt(keys.encryption_key, plaintext, aad)
+            # Pack: MAGIC | VERSION | SALT | NONCE | CIPHERTEXT (includes tag)
+            packed = MAGIC + VERSION + keys.salt + nonce + ciphertext
+        else:
+            # Fallback: Pure Python
+            nonce, ciphertext, tag = pure_python_encrypt(
+                keys.encryption_key, keys.hmac_key, plaintext
+            )
+            packed = MAGIC + VERSION + keys.salt + nonce + ciphertext + tag
+        
+        # Encode as Base85 for compact representation
+        encoded = base64.b85encode(packed).decode('ascii')
+        
+        return encoded
+        
+    finally:
+        keys.destroy()
+
+
+def decrypt_message(passphrase: str, ciphertext: str) -> str:
+    """
+    Decrypt a message using the shared passphrase.
+    
+    Raises DecryptionError if authentication fails or message is corrupted.
+    """
+    try:
+        # Decode from Base85
+        try:
+            packed = base64.b85decode(ciphertext.encode('ascii'))
+        except Exception:
+            raise DecryptionError("Invalid message format - not valid Base85")
+        
+        # Validate minimum length
+        min_len = len(MAGIC) + len(VERSION) + SALT_SIZE + NONCE_SIZE + 1 + TAG_SIZE
+        if len(packed) < min_len:
+            raise DecryptionError("Message too short")
+        
+        # Parse header
+        magic = packed[:4]
+        if magic != MAGIC:
+            raise DecryptionError("Invalid message - not a NullSec encrypted message")
+        
+        version = packed[4:5]
+        if version != VERSION:
+            raise DecryptionError(f"Unsupported protocol version: {version.hex()}")
+        
+        salt = packed[5:5 + SALT_SIZE]
+        
+        # Derive keys using recovered salt
+        keys = derive_keys(passphrase, salt)
+        
+        try:
+            if HAS_CRYPTO:
+                # AES-GCM mode
+                nonce = packed[5 + SALT_SIZE:5 + SALT_SIZE + NONCE_SIZE]
+                ciphertext_with_tag = packed[5 + SALT_SIZE + NONCE_SIZE:]
+                aad = MAGIC + VERSION + salt
+                
+                plaintext = aes_gcm_decrypt(
+                    keys.encryption_key, nonce, ciphertext_with_tag, aad
+                )
+            else:
+                # Pure Python fallback (32-byte nonce)
+                nonce = packed[5 + SALT_SIZE:5 + SALT_SIZE + 32]
+                tag = packed[-TAG_SIZE:]
+                ciphertext_bytes = packed[5 + SALT_SIZE + 32:-TAG_SIZE]
+                
+                plaintext = pure_python_decrypt(
+                    keys.encryption_key, keys.hmac_key, nonce, ciphertext_bytes, tag
+                )
+            
+            return plaintext.decode('utf-8')
+            
+        finally:
+            keys.destroy()
+            
+    except DecryptionError:
+        raise
+    except IntegrityError:
+        raise DecryptionError("Authentication failed - wrong key or corrupted message")
+    except Exception as e:
+        raise DecryptionError(f"Decryption failed: {e}")
+
+
+# ============================================================================
+# Key Generation
+# ============================================================================
+
+def generate_secure_passphrase(length: int = 32) -> str:
+    """Generate a cryptographically secure random passphrase."""
+    # Use a mix of alphanumeric and special characters
+    alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*"
+    return ''.join(secrets.choice(alphabet) for _ in range(length))
+
+
+def generate_word_passphrase(num_words: int = 6) -> str:
+    """Generate a passphrase using random words (Diceware-style)."""
+    # Common secure word list
+    words = [
+        "alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel",
+        "india", "juliet", "kilo", "lima", "mike", "november", "oscar", "papa",
+        "quebec", "romeo", "sierra", "tango", "uniform", "victor", "whiskey",
+        "xray", "yankee", "zulu", "cipher", "crypto", "secure", "private",
+        "shadow", "ghost", "phantom", "stealth", "covert", "hidden", "masked",
+        "shield", "armor", "vault", "bunker", "fortress", "bastion", "sentinel",
+        "nexus", "matrix", "vector", "quantum", "neural", "binary", "digital"
+    ]
+    return '-'.join(secrets.choice(words) for _ in range(num_words))
+
+
+# ============================================================================
+# Interactive CLI
+# ============================================================================
+
+class Colors:
+    """ANSI color codes for terminal output."""
+    RESET = '\033[0m'
+    CYAN = '\033[0;36m'
+    GREEN = '\033[0;32m'
+    RED = '\033[0;31m'
+    YELLOW = '\033[0;33m'
+    MAGENTA = '\033[0;35m'
+    BOLD = '\033[1m'
+    DIM = '\033[2m'
+
+
+def print_banner():
+    """Print the application banner."""
+    print(f"""
+{Colors.CYAN}  ███╗   ██╗██╗   ██╗██╗     ██╗     ███████╗███████╗ ██████╗
+  ████╗  ██║██║   ██║██║     ██║     ██╔════╝██╔════╝██╔════╝
+  ██╔██╗ ██║██║   ██║██║     ██║     ███████╗█████╗  ██║     
+  ██║╚██╗██║██║   ██║██║     ██║     ╚════██║██╔══╝  ██║     
+  ██║ ╚████║╚██████╔╝███████╗███████╗███████║███████╗╚██████╗
+  ╚═╝  ╚═══╝ ╚═════╝ ╚══════╝╚══════╝╚══════╝╚══════╝ ╚═════╝{Colors.RESET}
+  
+  {Colors.GREEN}ENCRYPTED MESSAGING SYSTEM{Colors.RESET}
+  {Colors.DIM}bad-antics development{Colors.RESET}
+""")
+
+
+def print_help():
+    """Print help information."""
+    print(f"""
+  {Colors.BOLD}Commands:{Colors.RESET}
+    {Colors.CYAN}e, encrypt{Colors.RESET}    - Encrypt a message
+    {Colors.CYAN}d, decrypt{Colors.RESET}    - Decrypt a message
+    {Colors.CYAN}k, keygen{Colors.RESET}     - Generate secure passphrase
+    {Colors.CYAN}w, wordkey{Colors.RESET}    - Generate word-based passphrase
+    {Colors.CYAN}c, clear{Colors.RESET}      - Clear screen
+    {Colors.CYAN}h, help{Colors.RESET}       - Show this help
+    {Colors.CYAN}q, quit{Colors.RESET}       - Exit program
+
+  {Colors.BOLD}Usage:{Colors.RESET}
+    1. Both users run this script
+    2. Share a secure passphrase (use 'keygen' to create one)
+    3. One user encrypts message with 'encrypt'
+    4. Send the encrypted output via Discord
+    5. Other user decrypts with 'decrypt' using same passphrase
+
+  {Colors.BOLD}Security:{Colors.RESET}
+    - AES-256-GCM authenticated encryption
+    - PBKDF2 with 600,000 iterations
+    - Unique salt and nonce per message
+    - Passphrase minimum: 12 characters
+""")
+
+
+def get_passphrase(confirm: bool = False) -> str:
+    """Securely get passphrase from user."""
+    while True:
+        passphrase = getpass.getpass(f"  {Colors.CYAN}Enter passphrase:{Colors.RESET} ")
+        
+        if len(passphrase) < MIN_PASSPHRASE_LEN:
+            print(f"  {Colors.RED}[!] Passphrase must be at least {MIN_PASSPHRASE_LEN} characters{Colors.RESET}")
+            continue
+        
+        if confirm:
+            confirm_pass = getpass.getpass(f"  {Colors.CYAN}Confirm passphrase:{Colors.RESET} ")
+            if passphrase != confirm_pass:
+                print(f"  {Colors.RED}[!] Passphrases do not match{Colors.RESET}")
+                continue
+        
+        return passphrase
+
+
+def interactive_encrypt():
+    """Interactive encryption mode."""
+    print(f"\n  {Colors.BOLD}[ ENCRYPT MESSAGE ]{Colors.RESET}\n")
+    
+    passphrase = get_passphrase()
+    
+    print(f"\n  {Colors.CYAN}Enter message (end with empty line):{Colors.RESET}")
+    lines = []
+    while True:
+        try:
+            line = input("  > ")
+            if not line:
+                break
+            lines.append(line)
+        except EOFError:
+            break
+    
+    if not lines:
+        print(f"  {Colors.RED}[!] No message entered{Colors.RESET}")
+        return
+    
+    message = '\n'.join(lines)
+    
+    try:
+        print(f"\n  {Colors.DIM}[*] Deriving keys (this may take a moment)...{Colors.RESET}")
+        encrypted = encrypt_message(passphrase, message)
+        
+        print(f"\n  {Colors.GREEN}[+] Encrypted message:{Colors.RESET}")
+        print(f"\n  {Colors.MAGENTA}{'─' * 60}{Colors.RESET}")
+        
+        # Print in chunks for readability
+        for i in range(0, len(encrypted), 60):
+            print(f"  {encrypted[i:i+60]}")
+        
+        print(f"  {Colors.MAGENTA}{'─' * 60}{Colors.RESET}")
+        print(f"\n  {Colors.DIM}Copy and send the encrypted text above via Discord{Colors.RESET}")
+        
+    except CryptError as e:
+        print(f"  {Colors.RED}[!] Encryption failed: {e}{Colors.RESET}")
+
+
+def interactive_decrypt():
+    """Interactive decryption mode."""
+    print(f"\n  {Colors.BOLD}[ DECRYPT MESSAGE ]{Colors.RESET}\n")
+    
+    passphrase = get_passphrase()
+    
+    print(f"\n  {Colors.CYAN}Paste encrypted message (end with empty line):{Colors.RESET}")
+    lines = []
+    while True:
+        try:
+            line = input("  > ")
+            if not line:
+                break
+            lines.append(line.strip())
+        except EOFError:
+            break
+    
+    if not lines:
+        print(f"  {Colors.RED}[!] No ciphertext entered{Colors.RESET}")
+        return
+    
+    # Remove any whitespace from ciphertext
+    ciphertext = ''.join(lines).replace(' ', '').replace('\n', '')
+    
+    try:
+        print(f"\n  {Colors.DIM}[*] Deriving keys and decrypting...{Colors.RESET}")
+        decrypted = decrypt_message(passphrase, ciphertext)
+        
+        print(f"\n  {Colors.GREEN}[+] Decrypted message:{Colors.RESET}")
+        print(f"\n  {Colors.CYAN}{'─' * 60}{Colors.RESET}")
+        for line in decrypted.split('\n'):
+            print(f"  {line}")
+        print(f"  {Colors.CYAN}{'─' * 60}{Colors.RESET}\n")
+        
+    except DecryptionError as e:
+        print(f"  {Colors.RED}[!] Decryption failed: {e}{Colors.RESET}")
+
+
+def interactive_mode():
+    """Run in interactive mode."""
+    print_banner()
+    print_help()
+    
+    while True:
+        try:
+            cmd = input(f"  {Colors.GREEN}nullsec-crypt>{Colors.RESET} ").strip().lower()
+            
+            if cmd in ('q', 'quit', 'exit'):
+                print(f"\n  {Colors.DIM}[*] Secure exit{Colors.RESET}\n")
+                break
+            elif cmd in ('e', 'encrypt'):
+                interactive_encrypt()
+            elif cmd in ('d', 'decrypt'):
+                interactive_decrypt()
+            elif cmd in ('k', 'keygen'):
+                key = generate_secure_passphrase()
+                print(f"\n  {Colors.GREEN}[+] Generated passphrase:{Colors.RESET}")
+                print(f"  {Colors.MAGENTA}{key}{Colors.RESET}\n")
+            elif cmd in ('w', 'wordkey'):
+                key = generate_word_passphrase()
+                print(f"\n  {Colors.GREEN}[+] Generated word passphrase:{Colors.RESET}")
+                print(f"  {Colors.MAGENTA}{key}{Colors.RESET}\n")
+            elif cmd in ('c', 'clear'):
+                os.system('clear' if os.name != 'nt' else 'cls')
+                print_banner()
+            elif cmd in ('h', 'help', '?'):
+                print_help()
+            elif cmd:
+                print(f"  {Colors.RED}[!] Unknown command. Type 'help' for commands.{Colors.RESET}")
+                
+        except KeyboardInterrupt:
+            print(f"\n\n  {Colors.DIM}[*] Interrupted{Colors.RESET}\n")
+            break
+        except EOFError:
+            break
+
+
+# ============================================================================
+# CLI Entry Point
+# ============================================================================
+
+def main():
+    """Main entry point."""
+    parser = argparse.ArgumentParser(
+        description='NullSec Encrypted Messaging System',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  %(prog)s                        # Interactive mode
+  %(prog)s -e "secret message"    # Encrypt message
+  %(prog)s -d "NSC1..."           # Decrypt message
+  %(prog)s --keygen               # Generate passphrase
+
+Security: Uses AES-256-GCM with PBKDF2 key derivation.
+        """
+    )
+    
+    parser.add_argument('-e', '--encrypt', metavar='MSG',
+                        help='Encrypt a message')
+    parser.add_argument('-d', '--decrypt', metavar='CIPHER',
+                        help='Decrypt a message')
+    parser.add_argument('-p', '--passphrase', metavar='PASS',
+                        help='Passphrase (will prompt if not provided)')
+    parser.add_argument('--keygen', action='store_true',
+                        help='Generate a secure random passphrase')
+    parser.add_argument('--wordkey', action='store_true',
+                        help='Generate a word-based passphrase')
+    parser.add_argument('-q', '--quiet', action='store_true',
+                        help='Minimal output (for scripting)')
+    
+    args = parser.parse_args()
+    
+    # Key generation mode
+    if args.keygen:
+        key = generate_secure_passphrase()
+        if args.quiet:
+            print(key)
+        else:
+            print(f"\n  Generated passphrase: {key}\n")
+        return 0
+    
+    if args.wordkey:
+        key = generate_word_passphrase()
+        if args.quiet:
+            print(key)
+        else:
+            print(f"\n  Generated passphrase: {key}\n")
+        return 0
+    
+    # Encryption mode
+    if args.encrypt:
+        passphrase = args.passphrase or getpass.getpass("Passphrase: ")
+        try:
+            encrypted = encrypt_message(passphrase, args.encrypt)
+            if args.quiet:
+                print(encrypted)
+            else:
+                print(f"\n  Encrypted:\n  {encrypted}\n")
+            return 0
+        except CryptError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            return 1
+    
+    # Decryption mode
+    if args.decrypt:
+        passphrase = args.passphrase or getpass.getpass("Passphrase: ")
+        try:
+            decrypted = decrypt_message(passphrase, args.decrypt)
+            if args.quiet:
+                print(decrypted)
+            else:
+                print(f"\n  Decrypted:\n  {decrypted}\n")
+            return 0
+        except DecryptionError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            return 1
+    
+    # Default: Interactive mode
+    interactive_mode()
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

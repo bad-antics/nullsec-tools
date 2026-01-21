@@ -1,0 +1,501 @@
+#!/bin/bash
+# ============================================================================
+# NullSec WiFi - Wireless Network Analysis & Security
+# ============================================================================
+# WiFi scanning, analysis, and security testing toolkit
+# Licensed under NullSec Public License v1.0
+# ============================================================================
+
+set -e
+
+VERSION="1.0.0"
+DATA_DIR="$HOME/.local/share/nullsec/wifi"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+PURPLE='\033[0;35m'
+NC='\033[0m'
+
+banner() {
+    echo -e "${CYAN}"
+    cat << 'EOF'
+    ╔═══════════════════════════════════════════════════════════════╗
+    ║              NULLSEC WIFI v1.0                                ║
+    ║              Wireless Network Analysis                        ║
+    ╚═══════════════════════════════════════════════════════════════╝
+EOF
+    echo -e "${NC}"
+}
+
+log() { echo -e "${GREEN}[✓]${NC} $1"; }
+warn() { echo -e "${YELLOW}[!]${NC} $1"; }
+error() { echo -e "${RED}[✗]${NC} $1"; exit 1; }
+info() { echo -e "${BLUE}[i]${NC} $1"; }
+
+init() {
+    mkdir -p "$DATA_DIR"/{scans,captures,reports}
+}
+
+# Get wireless interface
+get_interface() {
+    local iface
+    iface=$(iw dev 2>/dev/null | grep Interface | awk '{print $2}' | head -1)
+    
+    [[ -z "$iface" ]] && error "No wireless interface found"
+    echo "$iface"
+}
+
+# Signal strength bar
+signal_bar() {
+    local signal=$1
+    local bar=""
+    
+    # Convert to percentage-like scale (typical range: -100 to -30 dBm)
+    local strength=$(( (signal + 100) * 100 / 70 ))
+    [[ $strength -gt 100 ]] && strength=100
+    [[ $strength -lt 0 ]] && strength=0
+    
+    local filled=$(( strength / 10 ))
+    
+    for ((i=0; i<10; i++)); do
+        if [[ $i -lt $filled ]]; then
+            bar+="█"
+        else
+            bar+="░"
+        fi
+    done
+    
+    echo "$bar"
+}
+
+# Security color
+security_color() {
+    local security="$1"
+    
+    case "$security" in
+        *WPA3*) echo -e "${GREEN}$security${NC}" ;;
+        *WPA2*) echo -e "${BLUE}$security${NC}" ;;
+        *WPA*) echo -e "${YELLOW}$security${NC}" ;;
+        *WEP*) echo -e "${RED}$security${NC}" ;;
+        *Open*|*None*) echo -e "${RED}$security${NC}" ;;
+        *) echo "$security" ;;
+    esac
+}
+
+# Quick scan
+quick_scan() {
+    local interface="${1:-$(get_interface)}"
+    
+    info "Scanning with interface: $interface"
+    echo ""
+    
+    # Use nmcli for scanning (works without root)
+    if command -v nmcli &>/dev/null; then
+        nmcli -t -f SSID,BSSID,SIGNAL,SECURITY,CHAN device wifi list 2>/dev/null | \
+        sort -t: -k3 -rn | \
+        while IFS=: read -r ssid bssid signal security chan; do
+            [[ -z "$ssid" ]] && ssid="[Hidden]"
+            local bar
+            bar=$(signal_bar "-$((100 - signal))")
+            printf "%-32s %-18s %3s%% %s  CH%-3s %s\n" \
+                "${ssid:0:32}" "$bssid" "$signal" "$bar" "$chan" "$(security_color "$security")"
+        done
+    else
+        # Fallback to iw
+        sudo iw "$interface" scan 2>/dev/null | \
+        awk '/BSS / {bssid=$2; gsub(/\(.*/, "", bssid)} 
+             /SSID:/ {ssid=$2} 
+             /signal:/ {signal=$2} 
+             /WPA|RSN/ {security="WPA"} 
+             /BSS / && bssid {print ssid, bssid, signal, security; security="Open"}'
+    fi
+}
+
+# Detailed scan
+detailed_scan() {
+    local interface="${1:-$(get_interface)}"
+    local output="$DATA_DIR/scans/scan_$(date +%Y%m%d_%H%M%S).txt"
+    
+    banner
+    info "Performing detailed scan on $interface..."
+    echo ""
+    
+    {
+        echo "═══════════════════════════════════════════════════════════════"
+        echo "NullSec WiFi - Detailed Scan Report"
+        echo "Generated: $(date)"
+        echo "Interface: $interface"
+        echo "═══════════════════════════════════════════════════════════════"
+        echo ""
+        
+        sudo iw "$interface" scan 2>/dev/null
+        
+    } | tee "$output"
+    
+    log "Scan saved: $output"
+}
+
+# Monitor connected clients (AP mode)
+monitor_clients() {
+    local interface="${1:-$(get_interface)}"
+    
+    banner
+    info "Monitoring connected clients..."
+    echo ""
+    
+    if command -v iw &>/dev/null; then
+        sudo iw dev "$interface" station dump 2>/dev/null | \
+        awk '/Station/ {mac=$2} 
+             /signal:/ {signal=$2} 
+             /tx bytes:/ {tx=$3} 
+             /rx bytes:/ {rx=$3; print mac, signal, tx, rx}'
+    else
+        warn "iw command not found"
+    fi
+}
+
+# Channel analysis
+channel_analysis() {
+    local interface="${1:-$(get_interface)}"
+    
+    banner
+    info "Analyzing channel usage..."
+    echo ""
+    
+    declare -A channels
+    
+    # Count networks per channel
+    nmcli -t -f CHAN device wifi list 2>/dev/null | while read -r chan; do
+        [[ -z "$chan" ]] && continue
+        ((channels[$chan]++))
+    done | sort -t= -k1 -n
+    
+    # Visual channel map
+    echo "Channel Congestion Map (2.4 GHz):"
+    echo ""
+    
+    for chan in 1 2 3 4 5 6 7 8 9 10 11; do
+        local count
+        count=$(nmcli -t -f CHAN device wifi list 2>/dev/null | grep -c "^${chan}$" || echo "0")
+        printf "CH %2d: " "$chan"
+        
+        for ((i=0; i<count; i++)); do
+            if [[ $count -gt 5 ]]; then
+                echo -n -e "${RED}█${NC}"
+            elif [[ $count -gt 2 ]]; then
+                echo -n -e "${YELLOW}█${NC}"
+            else
+                echo -n -e "${GREEN}█${NC}"
+            fi
+        done
+        echo " ($count)"
+    done
+    
+    echo ""
+    echo "5 GHz channels:"
+    for chan in 36 40 44 48 52 56 60 64 100 104 108 112 116 120 124 128 132 136 140 149 153 157 161 165; do
+        local count
+        count=$(nmcli -t -f CHAN device wifi list 2>/dev/null | grep -c "^${chan}$" || echo "0")
+        [[ $count -gt 0 ]] && printf "CH %3d: %d networks\n" "$chan" "$count"
+    done
+}
+
+# Network info
+network_info() {
+    local ssid="$1"
+    
+    [[ -z "$ssid" ]] && error "Usage: network-info <SSID>"
+    
+    banner
+    info "Network Details: $ssid"
+    echo ""
+    
+    nmcli -t -f SSID,BSSID,MODE,CHAN,FREQ,RATE,SIGNAL,SECURITY,WPA-FLAGS,RSN-FLAGS device wifi list 2>/dev/null | \
+    grep "^${ssid}:" | while IFS=: read -r name bssid mode chan freq rate signal security wpa rsn; do
+        echo "SSID:      $name"
+        echo "BSSID:     $bssid"
+        echo "Mode:      $mode"
+        echo "Channel:   $chan"
+        echo "Frequency: $freq"
+        echo "Rate:      $rate"
+        echo "Signal:    $signal%"
+        echo "Security:  $security"
+        echo "WPA:       $wpa"
+        echo "RSN:       $rsn"
+        echo ""
+    done
+}
+
+# Enable monitor mode
+enable_monitor() {
+    local interface="${1:-$(get_interface)}"
+    
+    banner
+    info "Enabling monitor mode on $interface..."
+    
+    # Check if already in monitor mode
+    if iw dev "$interface" info 2>/dev/null | grep -q "type monitor"; then
+        log "Already in monitor mode"
+        return
+    fi
+    
+    # Save current mode
+    echo "$interface" > "$DATA_DIR/.monitor_interface"
+    
+    sudo ip link set "$interface" down
+    sudo iw "$interface" set monitor control
+    sudo ip link set "$interface" up
+    
+    log "Monitor mode enabled on $interface"
+}
+
+# Disable monitor mode
+disable_monitor() {
+    local interface="${1:-$(cat "$DATA_DIR/.monitor_interface" 2>/dev/null)}"
+    
+    [[ -z "$interface" ]] && interface=$(get_interface)
+    
+    banner
+    info "Disabling monitor mode on $interface..."
+    
+    sudo ip link set "$interface" down
+    sudo iw "$interface" set type managed
+    sudo ip link set "$interface" up
+    
+    rm -f "$DATA_DIR/.monitor_interface"
+    
+    # Restart NetworkManager
+    sudo systemctl restart NetworkManager 2>/dev/null || true
+    
+    log "Monitor mode disabled"
+}
+
+# Deauth detection
+deauth_detect() {
+    local interface="${1:-$(get_interface)}"
+    
+    banner
+    warn "Monitoring for deauthentication attacks..."
+    info "Press Ctrl+C to stop"
+    echo ""
+    
+    # Check if in monitor mode
+    if ! iw dev "$interface" info 2>/dev/null | grep -q "type monitor"; then
+        warn "Interface not in monitor mode. Enabling..."
+        enable_monitor "$interface"
+    fi
+    
+    # Monitor for deauth frames
+    sudo tcpdump -i "$interface" -n -e 'wlan type mgt subtype deauth or wlan type mgt subtype disassoc' 2>/dev/null | \
+    while read -r line; do
+        echo -e "${RED}[DEAUTH DETECTED]${NC} $(date '+%H:%M:%S') $line"
+    done
+}
+
+# Save known networks
+save_networks() {
+    local output="$DATA_DIR/known_networks.txt"
+    
+    banner
+    info "Saving known networks..."
+    
+    nmcli -t -f NAME,UUID,TYPE connection show 2>/dev/null | \
+    grep ":802-11-wireless$" | \
+    while IFS=: read -r name uuid type; do
+        echo "$name|$uuid"
+    done > "$output"
+    
+    log "Networks saved: $output"
+    log "Count: $(wc -l < "$output")"
+}
+
+# Create AP (hotspot)
+create_hotspot() {
+    local ssid="${1:-NullSec-AP}"
+    local password="${2:-$(head /dev/urandom | tr -dc 'A-Za-z0-9' | head -c 12)}"
+    
+    banner
+    info "Creating hotspot: $ssid"
+    
+    nmcli device wifi hotspot ssid "$ssid" password "$password" 2>/dev/null
+    
+    echo ""
+    log "Hotspot created"
+    echo ""
+    echo "  SSID:     $ssid"
+    echo "  Password: $password"
+    echo ""
+    info "To stop: nmcli connection down Hotspot"
+}
+
+# WiFi security audit
+security_audit() {
+    banner
+    info "Running WiFi security audit..."
+    echo ""
+    
+    local issues=0
+    
+    echo "=== Current Connection ==="
+    local current
+    current=$(nmcli -t -f NAME,TYPE connection show --active 2>/dev/null | grep ":802-11-wireless$" | cut -d: -f1)
+    
+    if [[ -n "$current" ]]; then
+        echo "Connected to: $current"
+        
+        # Check security
+        local security
+        security=$(nmcli -t -f 802-11-wireless-security.key-mgmt connection show "$current" 2>/dev/null | cut -d: -f2)
+        
+        case "$security" in
+            wpa-psk|sae)
+                log "Using WPA2/WPA3 (Good)"
+                ;;
+            wpa-eap)
+                log "Using WPA2-Enterprise (Good)"
+                ;;
+            *)
+                warn "Weak or no encryption detected"
+                ((issues++))
+                ;;
+        esac
+    else
+        warn "Not connected to any WiFi network"
+    fi
+    
+    echo ""
+    echo "=== Nearby Network Security ==="
+    
+    # Check nearby networks
+    local open_count=0
+    local wep_count=0
+    local wpa_count=0
+    
+    nmcli -t -f SECURITY device wifi list 2>/dev/null | while read -r sec; do
+        case "$sec" in
+            "") ((open_count++)) ;;
+            *WEP*) ((wep_count++)) ;;
+            *WPA*) ((wpa_count++)) ;;
+        esac
+    done
+    
+    nmcli -t -f SSID,SECURITY device wifi list 2>/dev/null | grep -E "^[^:]+:$" | while read -r line; do
+        local ssid
+        ssid=$(echo "$line" | cut -d: -f1)
+        warn "Open network detected: $ssid"
+        ((issues++))
+    done
+    
+    nmcli -t -f SSID,SECURITY device wifi list 2>/dev/null | grep -i "WEP" | while read -r line; do
+        local ssid
+        ssid=$(echo "$line" | cut -d: -f1)
+        warn "WEP network (insecure): $ssid"
+        ((issues++))
+    done
+    
+    echo ""
+    echo "=== Saved Networks ==="
+    
+    nmcli -t -f NAME connection show 2>/dev/null | head -10 | while read -r name; do
+        echo "  - $name"
+    done
+    
+    echo ""
+    if [[ $issues -eq 0 ]]; then
+        echo -e "${GREEN}No security issues detected${NC}"
+    else
+        echo -e "${YELLOW}Found $issues potential issues${NC}"
+    fi
+}
+
+# Help
+show_help() {
+    banner
+    cat << 'HELP'
+USAGE:
+    nullsec-wifi <command> [options]
+
+SCANNING:
+    scan                        Quick network scan
+    detailed [interface]        Detailed scan with full info
+    channels                    Channel congestion analysis
+    info <SSID>                Network details
+
+MONITORING:
+    monitor-on [interface]      Enable monitor mode
+    monitor-off [interface]     Disable monitor mode
+    clients [interface]         Monitor connected clients
+    deauth [interface]          Detect deauth attacks
+
+UTILITIES:
+    hotspot [ssid] [pass]       Create WiFi hotspot
+    save                        Save known networks list
+    audit                       Security audit
+
+EXAMPLES:
+    nullsec-wifi scan
+    sudo nullsec-wifi monitor-on wlan0
+    sudo nullsec-wifi deauth wlan0mon
+    nullsec-wifi hotspot MyAP secret123
+    nullsec-wifi audit
+
+NOTE:
+    Monitor mode requires root privileges.
+    Some features require NetworkManager.
+
+LICENSE:
+    NullSec Public License v1.0
+
+HELP
+}
+
+# Main
+main() {
+    init
+    
+    case "${1:-help}" in
+        scan|list)
+            banner
+            quick_scan "$2"
+            ;;
+        detailed|full)
+            detailed_scan "$2"
+            ;;
+        channels|channel)
+            channel_analysis "$2"
+            ;;
+        info|network)
+            network_info "$2"
+            ;;
+        monitor-on|mon)
+            enable_monitor "$2"
+            ;;
+        monitor-off|managed)
+            disable_monitor "$2"
+            ;;
+        clients)
+            monitor_clients "$2"
+            ;;
+        deauth|detect)
+            deauth_detect "$2"
+            ;;
+        hotspot|ap)
+            create_hotspot "$2" "$3"
+            ;;
+        save)
+            save_networks
+            ;;
+        audit|security)
+            security_audit
+            ;;
+        *)
+            show_help
+            ;;
+    esac
+}
+
+main "$@"

@@ -1,0 +1,67 @@
+#!/bin/bash
+#
+# NullSec Wallpaper Selector
+# Interactive wallpaper chooser for NullSec Linux
+#
+
+WALLPAPER_DIR="$HOME/Pictures/wallpapers/nullsec"
+
+echo ""
+echo "  NULLSEC WALLPAPER SELECTOR"
+echo "  bad-antics development"
+echo ""
+
+# Check if directory exists
+if [ ! -d "$WALLPAPER_DIR" ]; then
+    echo "  [!] Wallpaper directory not found"
+    echo "  [*] Creating and generating wallpapers..."
+    mkdir -p "$WALLPAPER_DIR"
+    python3 "$WALLPAPER_DIR/generate_wallpapers.py"
+fi
+
+# List available wallpapers
+echo "  Available wallpapers:"
+echo ""
+i=1
+wallpapers=()
+for wp in "$WALLPAPER_DIR"/*.png; do
+    if [ -f "$wp" ]; then
+        name=$(basename "$wp" .png)
+        wallpapers+=("$wp")
+        echo "    [$i] $name"
+        ((i++))
+    fi
+done
+
+if [ ${#wallpapers[@]} -eq 0 ]; then
+    echo "  [!] No wallpapers found. Generating..."
+    python3 "$WALLPAPER_DIR/generate_wallpapers.py"
+    exec "$0"  # Re-run script
+fi
+
+echo ""
+echo "    [0] Cancel"
+echo ""
+read -p "  Select wallpaper [1-$((i-1))]: " choice
+
+if [ "$choice" == "0" ] || [ -z "$choice" ]; then
+    echo "  [*] Cancelled"
+    exit 0
+fi
+
+if [ "$choice" -ge 1 ] && [ "$choice" -lt "$i" ]; then
+    selected="${wallpapers[$((choice-1))]}"
+    echo ""
+    echo "  [*] Setting wallpaper: $(basename "$selected")"
+    
+    # Set for MATE desktop
+    gsettings set org.mate.background picture-filename "$selected" 2>/dev/null
+    gsettings set org.mate.background picture-options "zoom" 2>/dev/null
+    
+    echo "  [+] Wallpaper set successfully!"
+else
+    echo "  [!] Invalid selection"
+    exit 1
+fi
+
+echo ""

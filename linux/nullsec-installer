@@ -1,0 +1,800 @@
+#!/usr/bin/env python3
+"""
+NullSec Installer - System Installer Generator
+==============================================
+Creates custom ISO installers for NullSec Linux.
+
+(c) bad-antics development
+"""
+
+import os
+import sys
+import subprocess
+import shutil
+import hashlib
+import argparse
+from pathlib import Path
+from datetime import datetime
+from typing import Optional, List
+
+# ============================================================================
+# Colors
+# ============================================================================
+
+class C:
+    RST = '\033[0m'
+    BLD = '\033[1m'
+    DIM = '\033[2m'
+    RED = '\033[0;31m'
+    GREEN = '\033[0;32m'
+    YELLOW = '\033[0;33m'
+    BLUE = '\033[0;34m'
+    CYAN = '\033[0;36m'
+
+# ============================================================================
+# Configuration
+# ============================================================================
+
+VERSION = '1.0.0'
+BUILD_DIR = Path('/tmp/nullsec-installer')
+OUTPUT_DIR = Path.home() / 'NullSec-ISO'
+
+INSTALLER_CONFIG = {
+    'name': 'NullSec Linux',
+    'version': '1.0',
+    'codename': 'void',
+    'architecture': 'amd64',
+    'desktop': 'mate',
+    'kernel': 'linux-image-amd64',
+    'locale': 'en_US.UTF-8',
+    'timezone': 'UTC',
+}
+
+# Packages to include in the installer
+CORE_PACKAGES = [
+    # Base system
+    'linux-image-amd64',
+    'grub-pc',
+    'grub-efi-amd64',
+    'systemd',
+    'systemd-sysv',
+    
+    # Filesystem
+    'btrfs-progs',
+    'dosfstools',
+    'ntfs-3g',
+    'cryptsetup',
+    'lvm2',
+    
+    # Networking
+    'network-manager',
+    'wireless-tools',
+    'wpasupplicant',
+    'iproute2',
+    'openssh-client',
+    'curl',
+    'wget',
+    
+    # Desktop
+    'mate-desktop-environment',
+    'mate-tweak',
+    'lightdm',
+    'lightdm-gtk-greeter',
+    
+    # Utils
+    'sudo',
+    'vim',
+    'git',
+    'htop',
+    'neofetch',
+    'python3',
+    'python3-pip',
+]
+
+SECURITY_PACKAGES = [
+    'ufw',
+    'fail2ban',
+    'apparmor',
+    'auditd',
+    'rkhunter',
+    'clamav',
+    'gnupg2',
+]
+
+HACKING_PACKAGES = [
+    'nmap',
+    'wireshark',
+    'tcpdump',
+    'netcat-openbsd',
+    'hydra',
+    'john',
+    'aircrack-ng',
+    'hashcat',
+    'sqlmap',
+    'metasploit-framework',
+    'burpsuite',
+]
+
+# ============================================================================
+# Installer Scripts
+# ============================================================================
+
+INSTALLER_SCRIPT = '''#!/bin/bash
+#
+# NullSec Linux Installer
+# Automated installation script
+#
+# (c) bad-antics development
+#
+
+set -e
+
+# Colors
+RED='\\033[0;31m'
+GREEN='\\033[0;32m'
+YELLOW='\\033[0;33m'
+CYAN='\\033[0;36m'
+NC='\\033[0m'
+
+# Banner
+banner() {
+    clear
+    echo -e "${GREEN}"
+    echo "  ███╗   ██╗██╗   ██╗██╗     ██╗     ███████╗███████╗ ██████╗"
+    echo "  ████╗  ██║██║   ██║██║     ██║     ██╔════╝██╔════╝██╔════╝"
+    echo "  ██╔██╗ ██║██║   ██║██║     ██║     ███████╗█████╗  ██║     "
+    echo "  ██║╚██╗██║██║   ██║██║     ██║     ╚════██║██╔══╝  ██║     "
+    echo "  ██║ ╚████║╚██████╔╝███████╗███████╗███████║███████╗╚██████╗"
+    echo "  ╚═╝  ╚═══╝ ╚═════╝ ╚══════╝╚══════╝╚══════╝╚══════╝ ╚═════╝"
+    echo -e "${NC}"
+    echo "                    Linux Installer v{version}"
+    echo ""
+}
+
+log_info() {
+    echo -e "${GREEN}[*]${NC} $1"
+}
+
+log_warn() {
+    echo -e "${YELLOW}[!]${NC} $1"
+}
+
+log_error() {
+    echo -e "${RED}[✗]${NC} $1"
+}
+
+# Check root
+check_root() {
+    if [[ $EUID -ne 0 ]]; then
+        log_error "This script must be run as root"
+        exit 1
+    fi
+}
+
+# Detect disks
+list_disks() {
+    echo ""
+    log_info "Available disks:"
+    lsblk -d -p -n -o NAME,SIZE,MODEL | grep -v "loop\\|sr"
+    echo ""
+}
+
+# Partition disk
+partition_disk() {
+    local disk=$1
+    local encrypt=$2
+    
+    log_info "Partitioning $disk..."
+    
+    # Wipe existing partitions
+    wipefs -a "$disk"
+    
+    # Create partitions
+    parted -s "$disk" mklabel gpt
+    parted -s "$disk" mkpart ESP fat32 1MiB 512MiB
+    parted -s "$disk" set 1 esp on
+    parted -s "$disk" mkpart primary 512MiB 100%
+    
+    sleep 2
+    
+    # Format EFI partition
+    mkfs.fat -F32 "${disk}1"
+    
+    if [[ "$encrypt" == "yes" ]]; then
+        log_info "Setting up LUKS encryption..."
+        cryptsetup luksFormat --type luks2 "${disk}2"
+        cryptsetup open "${disk}2" cryptroot
+        mkfs.btrfs -L nullsec /dev/mapper/cryptroot
+        ROOT_DEV="/dev/mapper/cryptroot"
+    else
+        mkfs.btrfs -L nullsec "${disk}2"
+        ROOT_DEV="${disk}2"
+    fi
+    
+    log_info "Disk partitioned successfully"
+}
+
+# Mount filesystems
+mount_filesystems() {
+    local root_dev=$1
+    local efi_dev=$2
+    
+    mount "$root_dev" /mnt
+    
+    # Create BTRFS subvolumes
+    btrfs subvolume create /mnt/@
+    btrfs subvolume create /mnt/@home
+    btrfs subvolume create /mnt/@snapshots
+    
+    umount /mnt
+    
+    # Mount with subvolumes
+    mount -o subvol=@,compress=zstd "$root_dev" /mnt
+    mkdir -p /mnt/{home,.snapshots,boot/efi}
+    mount -o subvol=@home,compress=zstd "$root_dev" /mnt/home
+    mount -o subvol=@snapshots,compress=zstd "$root_dev" /mnt/.snapshots
+    mount "$efi_dev" /mnt/boot/efi
+}
+
+# Install base system
+install_base() {
+    log_info "Installing base system..."
+    
+    # Copy squashfs to target
+    unsquashfs -f -d /mnt /cdrom/casper/filesystem.squashfs
+    
+    # Mount virtual filesystems
+    mount --bind /dev /mnt/dev
+    mount --bind /dev/pts /mnt/dev/pts
+    mount --bind /proc /mnt/proc
+    mount --bind /sys /mnt/sys
+    mount --bind /run /mnt/run
+}
+
+# Configure system
+configure_system() {
+    local hostname=$1
+    local username=$2
+    local password=$3
+    local timezone=$4
+    
+    log_info "Configuring system..."
+    
+    # Set hostname
+    echo "$hostname" > /mnt/etc/hostname
+    cat > /mnt/etc/hosts << EOF
+127.0.0.1   localhost
+127.0.1.1   $hostname
+::1         localhost ip6-localhost ip6-loopback
+EOF
+    
+    # Set timezone
+    chroot /mnt ln -sf "/usr/share/zoneinfo/$timezone" /etc/localtime
+    
+    # Create user
+    chroot /mnt useradd -m -G sudo,adm,cdrom,audio,video,plugdev -s /bin/bash "$username"
+    echo "$username:$password" | chroot /mnt chpasswd
+    
+    # Configure sudo
+    echo "$username ALL=(ALL) NOPASSWD:ALL" > /mnt/etc/sudoers.d/nullsec
+    
+    # Generate fstab
+    genfstab -U /mnt >> /mnt/etc/fstab
+}
+
+# Install bootloader
+install_bootloader() {
+    local disk=$1
+    local encrypted=$2
+    
+    log_info "Installing bootloader..."
+    
+    # Install GRUB
+    if [[ -d /sys/firmware/efi ]]; then
+        chroot /mnt grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=NullSec
+    else
+        chroot /mnt grub-install --target=i386-pc "$disk"
+    fi
+    
+    # Configure GRUB for encryption
+    if [[ "$encrypted" == "yes" ]]; then
+        sed -i 's/GRUB_CMDLINE_LINUX=""/GRUB_CMDLINE_LINUX="cryptdevice=UUID=$(blkid -s UUID -o value ${disk}2):cryptroot root=\\/dev\\/mapper\\/cryptroot"/' /mnt/etc/default/grub
+    fi
+    
+    # NullSec GRUB theme
+    sed -i 's/GRUB_TIMEOUT=5/GRUB_TIMEOUT=3/' /mnt/etc/default/grub
+    echo 'GRUB_BACKGROUND="/usr/share/backgrounds/nullsec/grub.png"' >> /mnt/etc/default/grub
+    
+    chroot /mnt update-grub
+}
+
+# Post-installation
+post_install() {
+    log_info "Running post-installation tasks..."
+    
+    # Enable services
+    chroot /mnt systemctl enable NetworkManager
+    chroot /mnt systemctl enable lightdm
+    chroot /mnt systemctl enable ufw
+    
+    # Install NullSec tools
+    if [[ -d /cdrom/nullsec-tools ]]; then
+        cp -r /cdrom/nullsec-tools/* /mnt/usr/local/bin/
+        chmod +x /mnt/usr/local/bin/nullsec-*
+    fi
+    
+    # Set default theme
+    mkdir -p /mnt/etc/skel/.config
+    
+    log_info "Post-installation complete"
+}
+
+# Cleanup
+cleanup() {
+    log_info "Cleaning up..."
+    
+    umount -R /mnt || true
+    
+    if [[ -e /dev/mapper/cryptroot ]]; then
+        cryptsetup close cryptroot
+    fi
+}
+
+# Main installation
+main() {
+    banner
+    check_root
+    
+    echo "Welcome to NullSec Linux Installer"
+    echo ""
+    echo "This will install NullSec Linux on your system."
+    echo "WARNING: This will erase all data on the selected disk!"
+    echo ""
+    
+    list_disks
+    
+    read -p "Enter disk to install to (e.g., /dev/sda): " DISK
+    
+    if [[ ! -b "$DISK" ]]; then
+        log_error "Invalid disk: $DISK"
+        exit 1
+    fi
+    
+    read -p "Encrypt disk? [y/N]: " ENCRYPT
+    ENCRYPT=${ENCRYPT,,}
+    [[ "$ENCRYPT" == "y" ]] && ENCRYPT="yes" || ENCRYPT="no"
+    
+    read -p "Hostname [nullsec]: " HOSTNAME
+    HOSTNAME=${HOSTNAME:-nullsec}
+    
+    read -p "Username: " USERNAME
+    read -sp "Password: " PASSWORD
+    echo ""
+    
+    read -p "Timezone [UTC]: " TIMEZONE
+    TIMEZONE=${TIMEZONE:-UTC}
+    
+    echo ""
+    log_warn "About to install NullSec Linux:"
+    echo "  Disk: $DISK"
+    echo "  Encrypted: $ENCRYPT"
+    echo "  Hostname: $HOSTNAME"
+    echo "  Username: $USERNAME"
+    echo "  Timezone: $TIMEZONE"
+    echo ""
+    
+    read -p "Continue? [y/N]: " CONFIRM
+    if [[ "${CONFIRM,,}" != "y" ]]; then
+        log_info "Installation cancelled"
+        exit 0
+    fi
+    
+    # Run installation
+    partition_disk "$DISK" "$ENCRYPT"
+    
+    if [[ "$ENCRYPT" == "yes" ]]; then
+        mount_filesystems "/dev/mapper/cryptroot" "${DISK}1"
+    else
+        mount_filesystems "${DISK}2" "${DISK}1"
+    fi
+    
+    install_base
+    configure_system "$HOSTNAME" "$USERNAME" "$PASSWORD" "$TIMEZONE"
+    install_bootloader "$DISK" "$ENCRYPT"
+    post_install
+    cleanup
+    
+    echo ""
+    log_info "Installation complete!"
+    echo ""
+    echo "You can now reboot into NullSec Linux."
+    echo "Remove the installation media when prompted."
+    echo ""
+    
+    read -p "Reboot now? [Y/n]: " REBOOT
+    if [[ "${REBOOT,,}" != "n" ]]; then
+        reboot
+    fi
+}
+
+main "$@"
+'''
+
+CALAMARES_SETTINGS = '''
+---
+modules-search: [ local, /usr/lib/calamares/modules ]
+
+sequence:
+  - show:
+    - welcome
+    - locale
+    - keyboard
+    - partition
+    - users
+    - summary
+  - exec:
+    - partition
+    - mount
+    - unpackfs
+    - machineid
+    - fstab
+    - locale
+    - keyboard
+    - localecfg
+    - users
+    - displaymanager
+    - networkcfg
+    - hwclock
+    - services-systemd
+    - packages
+    - grubcfg
+    - bootloader
+    - umount
+  - show:
+    - finished
+
+branding: nullsec
+prompt-install: true
+dont-chroot: false
+'''
+
+# ============================================================================
+# ISO Builder Functions
+# ============================================================================
+
+def check_dependencies() -> bool:
+    """Check for required tools."""
+    required = ['debootstrap', 'squashfs-tools', 'xorriso', 'grub-pc-bin', 'grub-efi-amd64-bin']
+    missing = []
+    
+    for pkg in required:
+        result = subprocess.run(['dpkg', '-l', pkg], capture_output=True)
+        if result.returncode != 0:
+            missing.append(pkg)
+    
+    if missing:
+        print(f"  {C.RED}✗{C.RST} Missing packages: {', '.join(missing)}")
+        print(f"  {C.CYAN}Install with:{C.RST} sudo apt install {' '.join(missing)}")
+        return False
+    
+    return True
+
+
+def create_base_system(build_dir: Path, arch: str = 'amd64') -> bool:
+    """Create base Debian system."""
+    chroot_dir = build_dir / 'chroot'
+    
+    print(f"\n  {C.CYAN}Creating base system...{C.RST}")
+    
+    # Run debootstrap
+    cmd = [
+        'sudo', 'debootstrap',
+        '--arch', arch,
+        '--variant=minbase',
+        'bookworm',  # Debian 12
+        str(chroot_dir),
+        'http://deb.debian.org/debian'
+    ]
+    
+    result = subprocess.run(cmd)
+    return result.returncode == 0
+
+
+def configure_chroot(build_dir: Path, packages: List[str]) -> bool:
+    """Configure the chroot environment."""
+    chroot_dir = build_dir / 'chroot'
+    
+    print(f"\n  {C.CYAN}Configuring chroot...{C.RST}")
+    
+    # Mount virtual filesystems
+    for fs in ['dev', 'dev/pts', 'proc', 'sys']:
+        target = chroot_dir / fs
+        target.mkdir(parents=True, exist_ok=True)
+        subprocess.run(['sudo', 'mount', '--bind', f'/{fs}', str(target)])
+    
+    # Configure sources.list
+    sources = '''
+deb http://deb.debian.org/debian bookworm main contrib non-free non-free-firmware
+deb http://deb.debian.org/debian bookworm-updates main contrib non-free non-free-firmware
+deb http://security.debian.org/debian-security bookworm-security main contrib non-free non-free-firmware
+'''
+    
+    sources_path = chroot_dir / 'etc/apt/sources.list'
+    subprocess.run(['sudo', 'bash', '-c', f'echo "{sources}" > {sources_path}'])
+    
+    # Update and install packages
+    subprocess.run(['sudo', 'chroot', str(chroot_dir), 'apt', 'update'])
+    subprocess.run(['sudo', 'chroot', str(chroot_dir), 'apt', 'install', '-y'] + packages)
+    
+    return True
+
+
+def create_squashfs(build_dir: Path) -> bool:
+    """Create squashfs filesystem."""
+    chroot_dir = build_dir / 'chroot'
+    iso_dir = build_dir / 'iso'
+    casper_dir = iso_dir / 'casper'
+    
+    casper_dir.mkdir(parents=True, exist_ok=True)
+    
+    print(f"\n  {C.CYAN}Creating squashfs filesystem...{C.RST}")
+    
+    # Unmount virtual filesystems
+    for fs in ['sys', 'proc', 'dev/pts', 'dev']:
+        subprocess.run(['sudo', 'umount', str(chroot_dir / fs)], capture_output=True)
+    
+    # Create squashfs
+    squashfs_path = casper_dir / 'filesystem.squashfs'
+    cmd = [
+        'sudo', 'mksquashfs',
+        str(chroot_dir),
+        str(squashfs_path),
+        '-comp', 'zstd',
+        '-Xcompression-level', '19',
+        '-e', 'boot'
+    ]
+    
+    result = subprocess.run(cmd)
+    return result.returncode == 0
+
+
+def create_iso_structure(build_dir: Path) -> bool:
+    """Create ISO directory structure."""
+    iso_dir = build_dir / 'iso'
+    
+    print(f"\n  {C.CYAN}Creating ISO structure...{C.RST}")
+    
+    # Create directories
+    for d in ['boot/grub', 'casper', 'isolinux', 'nullsec-tools']:
+        (iso_dir / d).mkdir(parents=True, exist_ok=True)
+    
+    # Copy kernel and initrd from chroot
+    chroot_dir = build_dir / 'chroot'
+    
+    # GRUB configuration
+    grub_cfg = f'''
+set timeout=10
+set default=0
+
+menuentry "NullSec Linux - Live" {{
+    linux /casper/vmlinuz boot=casper quiet splash
+    initrd /casper/initrd
+}}
+
+menuentry "NullSec Linux - Install" {{
+    linux /casper/vmlinuz boot=casper quiet splash install
+    initrd /casper/initrd
+}}
+
+menuentry "NullSec Linux - Safe Mode" {{
+    linux /casper/vmlinuz boot=casper xforcevesa nomodeset
+    initrd /casper/initrd
+}}
+
+menuentry "Memory Test" {{
+    linux16 /boot/memtest86+.bin
+}}
+'''
+    
+    (iso_dir / 'boot/grub/grub.cfg').write_text(grub_cfg)
+    
+    return True
+
+
+def build_iso(build_dir: Path, output_path: Path) -> bool:
+    """Build final ISO image."""
+    iso_dir = build_dir / 'iso'
+    
+    print(f"\n  {C.CYAN}Building ISO image...{C.RST}")
+    
+    cmd = [
+        'sudo', 'xorriso',
+        '-as', 'mkisofs',
+        '-iso-level', '3',
+        '-full-iso9660-filenames',
+        '-volid', 'NULLSEC_LINUX',
+        '-eltorito-boot', 'isolinux/isolinux.bin',
+        '-eltorito-catalog', 'isolinux/boot.cat',
+        '-no-emul-boot',
+        '-boot-load-size', '4',
+        '-boot-info-table',
+        '-isohybrid-mbr', '/usr/lib/ISOLINUX/isohdpfx.bin',
+        '-eltorito-alt-boot',
+        '-e', 'boot/grub/efi.img',
+        '-no-emul-boot',
+        '-isohybrid-gpt-basdat',
+        '-output', str(output_path),
+        str(iso_dir)
+    ]
+    
+    result = subprocess.run(cmd)
+    
+    if result.returncode == 0:
+        # Calculate checksum
+        sha256 = hashlib.sha256()
+        with open(output_path, 'rb') as f:
+            for chunk in iter(lambda: f.read(8192), b''):
+                sha256.update(chunk)
+        
+        checksum_file = output_path.with_suffix('.sha256')
+        checksum_file.write_text(f"{sha256.hexdigest()}  {output_path.name}\n")
+        
+        print(f"\n  {C.GREEN}✓{C.RST} ISO created: {output_path}")
+        print(f"  {C.GREEN}✓{C.RST} SHA256: {sha256.hexdigest()}")
+    
+    return result.returncode == 0
+
+
+# ============================================================================
+# User Interface
+# ============================================================================
+
+def print_banner():
+    """Print banner."""
+    print(f"""
+  {C.GREEN}╔═══════════════════════════════════════════════════╗{C.RST}
+  {C.GREEN}║{C.RST}     {C.BLD}NullSec Linux Installer Generator{C.RST}          {C.GREEN}║{C.RST}
+  {C.GREEN}║{C.RST}     {C.DIM}Create custom installation media{C.RST}            {C.GREEN}║{C.RST}
+  {C.GREEN}╚═══════════════════════════════════════════════════╝{C.RST}
+    """)
+
+
+def interactive_build():
+    """Interactive ISO build process."""
+    print_banner()
+    
+    print(f"  {C.BLD}Build Configuration:{C.RST}\n")
+    
+    # Get configuration
+    name = input(f"  {C.GREEN}Distribution name{C.RST} [NullSec Linux]: ").strip() or 'NullSec Linux'
+    version = input(f"  {C.GREEN}Version{C.RST} [1.0]: ").strip() or '1.0'
+    
+    print(f"\n  {C.BLD}Package Selection:{C.RST}")
+    print(f"  {C.CYAN}[1]{C.RST} Minimal (Base system only)")
+    print(f"  {C.CYAN}[2]{C.RST} Standard (Desktop + Core tools)")
+    print(f"  {C.CYAN}[3]{C.RST} Security (+ Security tools)")
+    print(f"  {C.CYAN}[4]{C.RST} Full (+ Penetration testing)")
+    
+    pkg_choice = input(f"\n  {C.GREEN}Selection{C.RST} [2]: ").strip() or '2'
+    
+    packages = CORE_PACKAGES.copy()
+    if pkg_choice in ['3', '4']:
+        packages.extend(SECURITY_PACKAGES)
+    if pkg_choice == '4':
+        packages.extend(HACKING_PACKAGES)
+    
+    output_name = f"nullsec-linux-{version}-amd64.iso"
+    output_path = OUTPUT_DIR / output_name
+    
+    print(f"\n  {C.BLD}Build Summary:{C.RST}")
+    print(f"  {C.CYAN}Name:{C.RST} {name}")
+    print(f"  {C.CYAN}Version:{C.RST} {version}")
+    print(f"  {C.CYAN}Packages:{C.RST} {len(packages)}")
+    print(f"  {C.CYAN}Output:{C.RST} {output_path}")
+    
+    confirm = input(f"\n  {C.YELLOW}Start build?{C.RST} [y/N]: ").strip().lower()
+    if confirm != 'y':
+        print(f"  {C.YELLOW}!{C.RST} Build cancelled")
+        return
+    
+    # Check dependencies
+    if not check_dependencies():
+        return
+    
+    # Create build directory
+    BUILD_DIR.mkdir(parents=True, exist_ok=True)
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    
+    try:
+        # Build steps
+        if not create_base_system(BUILD_DIR):
+            print(f"  {C.RED}✗{C.RST} Failed to create base system")
+            return
+        
+        if not configure_chroot(BUILD_DIR, packages):
+            print(f"  {C.RED}✗{C.RST} Failed to configure chroot")
+            return
+        
+        if not create_squashfs(BUILD_DIR):
+            print(f"  {C.RED}✗{C.RST} Failed to create squashfs")
+            return
+        
+        if not create_iso_structure(BUILD_DIR):
+            print(f"  {C.RED}✗{C.RST} Failed to create ISO structure")
+            return
+        
+        if not build_iso(BUILD_DIR, output_path):
+            print(f"  {C.RED}✗{C.RST} Failed to build ISO")
+            return
+        
+        print(f"\n  {C.GREEN}✓{C.RST} Build complete!")
+        
+    finally:
+        # Cleanup
+        print(f"\n  {C.CYAN}Cleaning up...{C.RST}")
+        subprocess.run(['sudo', 'rm', '-rf', str(BUILD_DIR)], capture_output=True)
+
+
+def generate_installer_script(output_path: Path):
+    """Generate standalone installer script."""
+    script = INSTALLER_SCRIPT.format(version=VERSION)
+    output_path.write_text(script)
+    output_path.chmod(0o755)
+    print(f"  {C.GREEN}✓{C.RST} Generated installer script: {output_path}")
+
+
+def main():
+    """Main entry point."""
+    parser = argparse.ArgumentParser(
+        description='NullSec Installer - System Installer Generator',
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    
+    parser.add_argument('--build', '-b', action='store_true',
+                        help='Build ISO image')
+    parser.add_argument('--script', '-s', metavar='FILE',
+                        help='Generate installer script')
+    parser.add_argument('--output', '-o', metavar='DIR',
+                        help='Output directory')
+    parser.add_argument('--packages', '-p', metavar='FILE',
+                        help='Package list file')
+    
+    args = parser.parse_args()
+    
+    if args.output:
+        global OUTPUT_DIR
+        OUTPUT_DIR = Path(args.output)
+    
+    if args.script:
+        generate_installer_script(Path(args.script))
+        return 0
+    
+    if args.build:
+        interactive_build()
+        return 0
+    
+    # Show menu
+    print_banner()
+    print(f"  {C.CYAN}[1]{C.RST} Build NullSec Linux ISO")
+    print(f"  {C.CYAN}[2]{C.RST} Generate installer script")
+    print(f"  {C.CYAN}[3]{C.RST} Show configuration")
+    print(f"  {C.CYAN}[q]{C.RST} Quit")
+    
+    choice = input(f"\n  {C.GREEN}>{C.RST} ").strip().lower()
+    
+    if choice == '1':
+        interactive_build()
+    elif choice == '2':
+        script_path = OUTPUT_DIR / 'nullsec-install.sh'
+        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        generate_installer_script(script_path)
+    elif choice == '3':
+        print(f"\n  {C.BLD}Current Configuration:{C.RST}")
+        for key, value in INSTALLER_CONFIG.items():
+            print(f"  {C.CYAN}{key}:{C.RST} {value}")
+    
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

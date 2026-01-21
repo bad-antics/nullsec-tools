@@ -1,0 +1,39 @@
+#!/bin/bash
+#
+# NullSec Framework Web Dashboard Launcher
+# bad-antics development
+#
+
+PORT=${1:-5000}
+WEBAPP_DIR="$HOME/nullsec-webapp"
+
+echo ""
+echo "  NULLSEC FRAMEWORK - WEB DASHBOARD"
+echo "  bad-antics development"
+echo ""
+
+# Check if Flask is installed
+if ! python3 -c "import flask" 2>/dev/null; then
+    echo "  [*] Installing Flask..."
+    pip3 install flask psutil --quiet
+fi
+
+# Check if already running
+if lsof -i:$PORT > /dev/null 2>&1; then
+    echo "  [!] Port $PORT already in use"
+    echo "  [*] Stopping existing instance..."
+    pkill -f "nullsec-webapp/app.py" 2>/dev/null
+    sleep 1
+fi
+
+cd "$WEBAPP_DIR"
+
+echo "  [+] Starting NullSec Dashboard on port $PORT"
+echo "  [*] URL: http://localhost:$PORT"
+echo "  [*] Press Ctrl+C to stop"
+echo ""
+
+# Open browser after short delay
+(sleep 2 && xdg-open "http://localhost:$PORT" 2>/dev/null) &
+
+python3 app.py

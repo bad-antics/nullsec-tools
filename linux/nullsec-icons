@@ -1,0 +1,784 @@
+#!/usr/bin/env python3
+"""
+NullSec Icons - Custom Icon Pack Generator
+==========================================
+Generates custom NullSec-themed icon packs.
+
+(c) bad-antics development
+"""
+
+import os
+import sys
+import subprocess
+import argparse
+import shutil
+from pathlib import Path
+
+# ============================================================================
+# Colors
+# ============================================================================
+
+class C:
+    RST = '\033[0m'
+    BLD = '\033[1m'
+    RED = '\033[0;31m'
+    GREEN = '\033[0;32m'
+    YELLOW = '\033[0;33m'
+    CYAN = '\033[0;36m'
+
+# ============================================================================
+# Icon Pack Definitions
+# ============================================================================
+
+ICON_STYLES = {
+    'cyber': {
+        'name': 'NullSec-Cyber',
+        'bg': '#0d1117',
+        'fg': '#00ff41',
+        'accent': '#00b341',
+        'glow': '#00ff4180',
+        'description': 'Matrix-style green on black'
+    },
+    'void': {
+        'name': 'NullSec-Void',
+        'bg': '#0a0a0f',
+        'fg': '#6366f1',
+        'accent': '#4f46e5',
+        'glow': '#6366f180',
+        'description': 'Deep purple void aesthetic'
+    },
+    'blood': {
+        'name': 'NullSec-Blood',
+        'bg': '#0d0808',
+        'fg': '#ff3333',
+        'accent': '#cc0000',
+        'glow': '#ff333380',
+        'description': 'Dark red hacker theme'
+    },
+    'arctic': {
+        'name': 'NullSec-Arctic',
+        'bg': '#0a1628',
+        'fg': '#00d4ff',
+        'accent': '#0099cc',
+        'glow': '#00d4ff80',
+        'description': 'Ice blue cold theme'
+    },
+    'toxic': {
+        'name': 'NullSec-Toxic',
+        'bg': '#0d1208',
+        'fg': '#b8ff00',
+        'accent': '#8bc34a',
+        'glow': '#b8ff0080',
+        'description': 'Neon green toxic hazard'
+    },
+    'phantom': {
+        'name': 'NullSec-Phantom',
+        'bg': '#121212',
+        'fg': '#ffffff',
+        'accent': '#808080',
+        'glow': '#ffffff40',
+        'description': 'Monochrome ghost style'
+    },
+    'neon': {
+        'name': 'NullSec-Neon',
+        'bg': '#0d0d1a',
+        'fg': '#ff00ff',
+        'accent': '#00ffff',
+        'glow': '#ff00ff80',
+        'description': 'Cyberpunk neon pink/cyan'
+    },
+    'stealth': {
+        'name': 'NullSec-Stealth',
+        'bg': '#1a1a1a',
+        'fg': '#333333',
+        'accent': '#4a4a4a',
+        'glow': '#33333340',
+        'description': 'Ultra-dark stealth mode'
+    }
+}
+
+# Icon categories and names
+ICON_CATEGORIES = {
+    'apps': [
+        'terminal', 'file-manager', 'text-editor', 'web-browser',
+        'settings', 'system-monitor', 'calculator', 'image-viewer',
+        'media-player', 'archive-manager', 'software-center', 'help',
+        'utilities-terminal', 'accessories-text-editor', 'system-file-manager'
+    ],
+    'places': [
+        'folder', 'folder-documents', 'folder-downloads', 'folder-music',
+        'folder-pictures', 'folder-videos', 'folder-home', 'folder-desktop',
+        'user-home', 'user-desktop', 'user-trash', 'computer', 'network-server'
+    ],
+    'status': [
+        'network-wireless', 'network-wired', 'battery-full', 'battery-low',
+        'audio-volume-high', 'audio-volume-muted', 'dialog-warning',
+        'dialog-error', 'dialog-information', 'security-high', 'security-low'
+    ],
+    'actions': [
+        'edit', 'delete', 'add', 'remove', 'refresh', 'search', 'zoom-in',
+        'zoom-out', 'lock', 'unlock', 'download', 'upload', 'process-stop'
+    ],
+    'categories': [
+        'applications-internet', 'applications-multimedia', 'applications-office',
+        'applications-system', 'applications-utilities', 'applications-development',
+        'applications-games', 'applications-graphics', 'preferences-system'
+    ],
+    'devices': [
+        'drive-harddisk', 'drive-removable-media', 'media-usb', 'media-optical',
+        'input-keyboard', 'input-mouse', 'printer', 'camera-photo', 'phone'
+    ],
+    'nullsec': [
+        'nullsec-logo', 'nullsec-shield', 'nullsec-terminal', 'nullsec-crypt',
+        'nullsec-vault', 'nullsec-shred', 'nullsec-netwatch', 'nullsec-harden'
+    ]
+}
+
+# ============================================================================
+# Icon Generation Functions
+# ============================================================================
+
+def generate_icon_svg(icon_name: str, style: dict, category: str) -> str:
+    """Generate SVG content for an icon."""
+    fg = style['fg']
+    bg = style['bg']
+    accent = style['accent']
+    glow = style['glow']
+    
+    # Icon-specific SVG paths
+    icon_paths = {
+        # Apps
+        'terminal': f'''
+            <rect x="8" y="8" width="48" height="48" rx="4" fill="{bg}" stroke="{fg}" stroke-width="2"/>
+            <text x="14" y="38" font-family="monospace" font-size="16" fill="{fg}">$_</text>
+            <rect x="12" y="44" width="20" height="2" fill="{accent}"/>
+        ''',
+        'file-manager': f'''
+            <path d="M12 12 h12 l4 6 h28 v36 h-44 z" fill="{bg}" stroke="{fg}" stroke-width="2"/>
+            <rect x="18" y="30" width="28" height="2" fill="{accent}"/>
+            <rect x="18" y="38" width="20" height="2" fill="{accent}"/>
+        ''',
+        'settings': f'''
+            <circle cx="32" cy="32" r="20" fill="none" stroke="{fg}" stroke-width="2"/>
+            <circle cx="32" cy="32" r="8" fill="{accent}"/>
+            <g stroke="{fg}" stroke-width="3">
+                <line x1="32" y1="4" x2="32" y2="16"/>
+                <line x1="32" y1="48" x2="32" y2="60"/>
+                <line x1="4" y1="32" x2="16" y2="32"/>
+                <line x1="48" y1="32" x2="60" y2="32"/>
+            </g>
+        ''',
+        'web-browser': f'''
+            <circle cx="32" cy="32" r="24" fill="none" stroke="{fg}" stroke-width="2"/>
+            <ellipse cx="32" cy="32" rx="10" ry="24" fill="none" stroke="{fg}" stroke-width="1.5"/>
+            <line x1="8" y1="32" x2="56" y2="32" stroke="{fg}" stroke-width="1.5"/>
+            <line x1="32" y1="8" x2="32" y2="56" stroke="{accent}" stroke-width="1.5"/>
+        ''',
+        
+        # Places
+        'folder': f'''
+            <path d="M8 16 h16 l4 6 h28 v32 h-48 z" fill="{bg}" stroke="{fg}" stroke-width="2"/>
+        ''',
+        'folder-home': f'''
+            <path d="M8 16 h16 l4 6 h28 v32 h-48 z" fill="{bg}" stroke="{fg}" stroke-width="2"/>
+            <path d="M32 30 l-10 10 h6 v10 h8 v-10 h6 z" fill="{accent}"/>
+        ''',
+        'user-home': f'''
+            <path d="M32 8 l24 20 h-8 v24 h-12 v-16 h-8 v16 h-12 v-24 h-8 z" fill="{bg}" stroke="{fg}" stroke-width="2"/>
+        ''',
+        
+        # Status
+        'network-wireless': f'''
+            <path d="M32 52 l-4 -4 a6 6 0 0 1 8 0 z" fill="{fg}"/>
+            <path d="M32 40 a16 16 0 0 0 -14 8" fill="none" stroke="{fg}" stroke-width="3"/>
+            <path d="M32 40 a16 16 0 0 1 14 8" fill="none" stroke="{fg}" stroke-width="3"/>
+            <path d="M32 28 a28 28 0 0 0 -22 14" fill="none" stroke="{accent}" stroke-width="3"/>
+            <path d="M32 28 a28 28 0 0 1 22 14" fill="none" stroke="{accent}" stroke-width="3"/>
+        ''',
+        'security-high': f'''
+            <path d="M32 6 l22 8 v20 c0 16 -22 26 -22 26 s-22 -10 -22 -26 v-20 z" 
+                  fill="{bg}" stroke="{fg}" stroke-width="2"/>
+            <path d="M24 32 l6 6 l12 -12" stroke="{accent}" stroke-width="4" fill="none"/>
+        ''',
+        'lock': f'''
+            <rect x="16" y="28" width="32" height="28" rx="4" fill="{bg}" stroke="{fg}" stroke-width="2"/>
+            <path d="M22 28 v-8 a10 10 0 0 1 20 0 v8" fill="none" stroke="{fg}" stroke-width="3"/>
+            <circle cx="32" cy="42" r="4" fill="{accent}"/>
+        ''',
+        
+        # NullSec specific
+        'nullsec-logo': f'''
+            <rect x="6" y="6" width="52" height="52" rx="8" fill="{bg}" stroke="{fg}" stroke-width="2"/>
+            <text x="16" y="42" font-family="monospace" font-weight="bold" font-size="20" fill="{fg}">NS</text>
+            <circle cx="48" cy="16" r="4" fill="{accent}"/>
+        ''',
+        'nullsec-shield': f'''
+            <path d="M32 4 l26 10 v22 c0 18 -26 28 -26 28 s-26 -10 -26 -28 v-22 z" 
+                  fill="{bg}" stroke="{fg}" stroke-width="2"/>
+            <text x="18" y="42" font-family="monospace" font-weight="bold" font-size="16" fill="{accent}">NS</text>
+        ''',
+        'nullsec-terminal': f'''
+            <rect x="4" y="8" width="56" height="48" rx="4" fill="{bg}" stroke="{fg}" stroke-width="2"/>
+            <text x="10" y="32" font-family="monospace" font-size="12" fill="{fg}">nullsec</text>
+            <text x="10" y="46" font-family="monospace" font-size="10" fill="{accent}">$&gt;_</text>
+        ''',
+        'nullsec-crypt': f'''
+            <rect x="8" y="12" width="48" height="40" rx="4" fill="{bg}" stroke="{fg}" stroke-width="2"/>
+            <text x="14" y="38" font-family="monospace" font-size="12" fill="{accent}">🔐AES</text>
+            <line x1="14" y1="20" x2="50" y2="20" stroke="{fg}" stroke-width="1"/>
+        ''',
+        'nullsec-vault': f'''
+            <rect x="10" y="10" width="44" height="44" rx="6" fill="{bg}" stroke="{fg}" stroke-width="3"/>
+            <circle cx="32" cy="32" r="12" fill="none" stroke="{fg}" stroke-width="2"/>
+            <circle cx="32" cy="32" r="4" fill="{accent}"/>
+            <line x1="32" y1="20" x2="32" y2="12" stroke="{fg}" stroke-width="2"/>
+        ''',
+    }
+    
+    # Get icon-specific path or use default
+    icon_content = icon_paths.get(icon_name, f'''
+        <rect x="8" y="8" width="48" height="48" rx="4" fill="{bg}" stroke="{fg}" stroke-width="2"/>
+        <text x="16" y="40" font-family="monospace" font-size="10" fill="{accent}">{icon_name[:4]}</text>
+    ''')
+    
+    svg = f'''<?xml version="1.0" encoding="UTF-8"?>
+<svg width="64" height="64" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+        <filter id="glow">
+            <feGaussianBlur stdDeviation="2" result="coloredBlur"/>
+            <feMerge>
+                <feMergeNode in="coloredBlur"/>
+                <feMergeNode in="SourceGraphic"/>
+            </feMerge>
+        </filter>
+    </defs>
+    <g filter="url(#glow)">
+        {icon_content}
+    </g>
+</svg>'''
+    
+    return svg
+
+
+def generate_index_theme(style_name: str, style: dict) -> str:
+    """Generate index.theme file for icon pack."""
+    return f'''[Icon Theme]
+Name={style['name']}
+Comment={style['description']} - NullSec Linux Icon Pack
+Inherits=hicolor,gnome,Adwaita
+
+Example=folder
+
+# Directory list
+Directories=16x16/apps,16x16/places,16x16/status,16x16/actions,16x16/categories,16x16/devices,16x16/nullsec,22x22/apps,22x22/places,22x22/status,22x22/actions,22x22/categories,22x22/devices,22x22/nullsec,24x24/apps,24x24/places,24x24/status,24x24/actions,24x24/categories,24x24/devices,24x24/nullsec,32x32/apps,32x32/places,32x32/status,32x32/actions,32x32/categories,32x32/devices,32x32/nullsec,48x48/apps,48x48/places,48x48/status,48x48/actions,48x48/categories,48x48/devices,48x48/nullsec,64x64/apps,64x64/places,64x64/status,64x64/actions,64x64/categories,64x64/devices,64x64/nullsec,scalable/apps,scalable/places,scalable/status,scalable/actions,scalable/categories,scalable/devices,scalable/nullsec
+
+[16x16/apps]
+Size=16
+Context=Applications
+Type=Fixed
+
+[16x16/places]
+Size=16
+Context=Places
+Type=Fixed
+
+[16x16/status]
+Size=16
+Context=Status
+Type=Fixed
+
+[16x16/actions]
+Size=16
+Context=Actions
+Type=Fixed
+
+[16x16/categories]
+Size=16
+Context=Categories
+Type=Fixed
+
+[16x16/devices]
+Size=16
+Context=Devices
+Type=Fixed
+
+[16x16/nullsec]
+Size=16
+Context=Applications
+Type=Fixed
+
+[22x22/apps]
+Size=22
+Context=Applications
+Type=Fixed
+
+[22x22/places]
+Size=22
+Context=Places
+Type=Fixed
+
+[22x22/status]
+Size=22
+Context=Status
+Type=Fixed
+
+[22x22/actions]
+Size=22
+Context=Actions
+Type=Fixed
+
+[22x22/categories]
+Size=22
+Context=Categories
+Type=Fixed
+
+[22x22/devices]
+Size=22
+Context=Devices
+Type=Fixed
+
+[22x22/nullsec]
+Size=22
+Context=Applications
+Type=Fixed
+
+[24x24/apps]
+Size=24
+Context=Applications
+Type=Fixed
+
+[24x24/places]
+Size=24
+Context=Places
+Type=Fixed
+
+[24x24/status]
+Size=24
+Context=Status
+Type=Fixed
+
+[24x24/actions]
+Size=24
+Context=Actions
+Type=Fixed
+
+[24x24/categories]
+Size=24
+Context=Categories
+Type=Fixed
+
+[24x24/devices]
+Size=24
+Context=Devices
+Type=Fixed
+
+[24x24/nullsec]
+Size=24
+Context=Applications
+Type=Fixed
+
+[32x32/apps]
+Size=32
+Context=Applications
+Type=Fixed
+
+[32x32/places]
+Size=32
+Context=Places
+Type=Fixed
+
+[32x32/status]
+Size=32
+Context=Status
+Type=Fixed
+
+[32x32/actions]
+Size=32
+Context=Actions
+Type=Fixed
+
+[32x32/categories]
+Size=32
+Context=Categories
+Type=Fixed
+
+[32x32/devices]
+Size=32
+Context=Devices
+Type=Fixed
+
+[32x32/nullsec]
+Size=32
+Context=Applications
+Type=Fixed
+
+[48x48/apps]
+Size=48
+Context=Applications
+Type=Fixed
+
+[48x48/places]
+Size=48
+Context=Places
+Type=Fixed
+
+[48x48/status]
+Size=48
+Context=Status
+Type=Fixed
+
+[48x48/actions]
+Size=48
+Context=Actions
+Type=Fixed
+
+[48x48/categories]
+Size=48
+Context=Categories
+Type=Fixed
+
+[48x48/devices]
+Size=48
+Context=Devices
+Type=Fixed
+
+[48x48/nullsec]
+Size=48
+Context=Applications
+Type=Fixed
+
+[64x64/apps]
+Size=64
+Context=Applications
+Type=Fixed
+
+[64x64/places]
+Size=64
+Context=Places
+Type=Fixed
+
+[64x64/status]
+Size=64
+Context=Status
+Type=Fixed
+
+[64x64/actions]
+Size=64
+Context=Actions
+Type=Fixed
+
+[64x64/categories]
+Size=64
+Context=Categories
+Type=Fixed
+
+[64x64/devices]
+Size=64
+Context=Devices
+Type=Fixed
+
+[64x64/nullsec]
+Size=64
+Context=Applications
+Type=Fixed
+
+[scalable/apps]
+Size=64
+Context=Applications
+Type=Scalable
+MinSize=16
+MaxSize=256
+
+[scalable/places]
+Size=64
+Context=Places
+Type=Scalable
+MinSize=16
+MaxSize=256
+
+[scalable/status]
+Size=64
+Context=Status
+Type=Scalable
+MinSize=16
+MaxSize=256
+
+[scalable/actions]
+Size=64
+Context=Actions
+Type=Scalable
+MinSize=16
+MaxSize=256
+
+[scalable/categories]
+Size=64
+Context=Categories
+Type=Scalable
+MinSize=16
+MaxSize=256
+
+[scalable/devices]
+Size=64
+Context=Devices
+Type=Scalable
+MinSize=16
+MaxSize=256
+
+[scalable/nullsec]
+Size=64
+Context=Applications
+Type=Scalable
+MinSize=16
+MaxSize=256
+'''
+
+
+def create_icon_pack(style_name: str, output_dir: Path, verbose: bool = False):
+    """Create a complete icon pack for a style."""
+    style = ICON_STYLES[style_name]
+    pack_dir = output_dir / style['name']
+    
+    print(f"\n  {C.CYAN}Creating icon pack:{C.RST} {style['name']}")
+    print(f"  {C.GREEN}Description:{C.RST} {style['description']}")
+    
+    # Create directory structure
+    sizes = ['16x16', '22x22', '24x24', '32x32', '48x48', '64x64', 'scalable']
+    
+    for size in sizes:
+        for category in ICON_CATEGORIES:
+            cat_dir = pack_dir / size / category
+            cat_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Write index.theme
+    index_content = generate_index_theme(style_name, style)
+    (pack_dir / 'index.theme').write_text(index_content)
+    
+    if verbose:
+        print(f"  {C.GREEN}✓{C.RST} Created index.theme")
+    
+    # Generate icons
+    icon_count = 0
+    for category, icons in ICON_CATEGORIES.items():
+        for icon_name in icons:
+            svg_content = generate_icon_svg(icon_name, style, category)
+            
+            # Write scalable SVG
+            svg_path = pack_dir / 'scalable' / category / f'{icon_name}.svg'
+            svg_path.write_text(svg_content)
+            
+            # Generate PNG versions using ImageMagick if available
+            try:
+                for size in ['16x16', '22x22', '24x24', '32x32', '48x48', '64x64']:
+                    dim = size.split('x')[0]
+                    png_path = pack_dir / size / category / f'{icon_name}.png'
+                    
+                    subprocess.run([
+                        'convert', '-background', 'none',
+                        '-resize', size,
+                        str(svg_path), str(png_path)
+                    ], capture_output=True)
+            except FileNotFoundError:
+                pass  # ImageMagick not available
+            
+            icon_count += 1
+            
+            if verbose:
+                print(f"  {C.GREEN}✓{C.RST} Generated: {icon_name}")
+    
+    print(f"  {C.GREEN}✓{C.RST} Generated {icon_count} icons")
+    return pack_dir
+
+
+def install_icon_pack(pack_dir: Path) -> bool:
+    """Install icon pack to user's icons directory."""
+    icons_dir = Path.home() / '.local' / 'share' / 'icons'
+    icons_dir.mkdir(parents=True, exist_ok=True)
+    
+    dest = icons_dir / pack_dir.name
+    
+    if dest.exists():
+        shutil.rmtree(dest)
+    
+    shutil.copytree(pack_dir, dest)
+    
+    # Update icon cache
+    try:
+        subprocess.run(['gtk-update-icon-cache', '-f', str(dest)], capture_output=True)
+    except Exception:
+        pass
+    
+    return True
+
+
+def apply_icon_theme(theme_name: str) -> bool:
+    """Apply icon theme using gsettings."""
+    try:
+        # MATE
+        subprocess.run([
+            'gsettings', 'set', 'org.mate.interface', 'icon-theme', theme_name
+        ], capture_output=True)
+        
+        # GTK
+        subprocess.run([
+            'gsettings', 'set', 'org.gnome.desktop.interface', 'icon-theme', theme_name
+        ], capture_output=True)
+        
+        return True
+    except Exception:
+        return False
+
+
+def list_styles():
+    """List available icon styles."""
+    print(f"\n  {C.BLD}Available NullSec Icon Styles:{C.RST}\n")
+    
+    for name, style in ICON_STYLES.items():
+        fg_preview = style['fg']
+        print(f"  {C.GREEN}•{C.RST} {name:12} - {style['description']}")
+    
+    print()
+
+
+def interactive_menu():
+    """Interactive icon pack manager."""
+    while True:
+        print(f"\n  {C.BLD}╔═══════════════════════════════════════╗{C.RST}")
+        print(f"  {C.BLD}║{C.RST}    {C.GREEN}NullSec Icon Pack Manager{C.RST}         {C.BLD}║{C.RST}")
+        print(f"  {C.BLD}╚═══════════════════════════════════════╝{C.RST}")
+        print()
+        print(f"  {C.CYAN}[1]{C.RST} Generate single icon pack")
+        print(f"  {C.CYAN}[2]{C.RST} Generate all icon packs")
+        print(f"  {C.CYAN}[3]{C.RST} Install icon pack")
+        print(f"  {C.CYAN}[4]{C.RST} Apply icon theme")
+        print(f"  {C.CYAN}[5]{C.RST} List available styles")
+        print(f"  {C.CYAN}[q]{C.RST} Quit")
+        print()
+        
+        choice = input(f"  {C.GREEN}Select option:{C.RST} ").strip().lower()
+        
+        if choice == '1':
+            list_styles()
+            style = input(f"  {C.GREEN}Enter style name:{C.RST} ").strip()
+            if style in ICON_STYLES:
+                output_dir = Path.home() / '.local' / 'share' / 'nullsec-icons'
+                output_dir.mkdir(parents=True, exist_ok=True)
+                create_icon_pack(style, output_dir, verbose=True)
+            else:
+                print(f"  {C.RED}✗{C.RST} Unknown style: {style}")
+        
+        elif choice == '2':
+            output_dir = Path.home() / '.local' / 'share' / 'nullsec-icons'
+            output_dir.mkdir(parents=True, exist_ok=True)
+            for style in ICON_STYLES:
+                create_icon_pack(style, output_dir)
+            print(f"\n  {C.GREEN}✓{C.RST} All icon packs generated!")
+        
+        elif choice == '3':
+            output_dir = Path.home() / '.local' / 'share' / 'nullsec-icons'
+            if output_dir.exists():
+                packs = [d for d in output_dir.iterdir() if d.is_dir()]
+                print(f"\n  {C.BLD}Available packs:{C.RST}")
+                for i, pack in enumerate(packs, 1):
+                    print(f"  {C.CYAN}[{i}]{C.RST} {pack.name}")
+                
+                idx = input(f"\n  {C.GREEN}Select pack to install:{C.RST} ").strip()
+                try:
+                    pack = packs[int(idx) - 1]
+                    if install_icon_pack(pack):
+                        print(f"  {C.GREEN}✓{C.RST} Installed: {pack.name}")
+                except (ValueError, IndexError):
+                    print(f"  {C.RED}✗{C.RST} Invalid selection")
+            else:
+                print(f"  {C.YELLOW}!{C.RST} No packs generated yet")
+        
+        elif choice == '4':
+            icons_dir = Path.home() / '.local' / 'share' / 'icons'
+            if icons_dir.exists():
+                themes = [d.name for d in icons_dir.iterdir() if d.is_dir() and 'NullSec' in d.name]
+                if themes:
+                    print(f"\n  {C.BLD}Installed NullSec themes:{C.RST}")
+                    for i, theme in enumerate(themes, 1):
+                        print(f"  {C.CYAN}[{i}]{C.RST} {theme}")
+                    
+                    idx = input(f"\n  {C.GREEN}Select theme to apply:{C.RST} ").strip()
+                    try:
+                        theme = themes[int(idx) - 1]
+                        if apply_icon_theme(theme):
+                            print(f"  {C.GREEN}✓{C.RST} Applied: {theme}")
+                    except (ValueError, IndexError):
+                        print(f"  {C.RED}✗{C.RST} Invalid selection")
+                else:
+                    print(f"  {C.YELLOW}!{C.RST} No NullSec themes installed")
+            else:
+                print(f"  {C.YELLOW}!{C.RST} No icons directory found")
+        
+        elif choice == '5':
+            list_styles()
+        
+        elif choice == 'q':
+            break
+
+
+def main():
+    """Main entry point."""
+    parser = argparse.ArgumentParser(
+        description='NullSec Icons - Custom Icon Pack Generator',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog='''
+Examples:
+  nullsec-icons --generate cyber
+  nullsec-icons --generate-all
+  nullsec-icons --install NullSec-Cyber
+  nullsec-icons --apply NullSec-Void
+        '''
+    )
+    
+    parser.add_argument('--generate', '-g', metavar='STYLE',
+                        help='Generate icon pack for style')
+    parser.add_argument('--generate-all', '-G', action='store_true',
+                        help='Generate all icon packs')
+    parser.add_argument('--install', '-i', metavar='PACK',
+                        help='Install icon pack')
+    parser.add_argument('--apply', '-a', metavar='THEME',
+                        help='Apply icon theme')
+    parser.add_argument('--list', '-l', action='store_true',
+                        help='List available styles')
+    parser.add_argument('--output', '-o', metavar='DIR',
+                        help='Output directory')
+    parser.add_argument('--verbose', '-v', action='store_true',
+                        help='Verbose output')
+    
+    args = parser.parse_args()
+    
+    output_dir = Path(args.output) if args.output else Path.home() / '.local' / 'share' / 'nullsec-icons'
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    if args.list:
+        list_styles()
+    elif args.generate:
+        if args.generate not in ICON_STYLES:
+            print(f"  {C.RED}✗{C.RST} Unknown style: {args.generate}")
+            list_styles()
+            return 1
+        create_icon_pack(args.generate, output_dir, verbose=args.verbose)
+    elif args.generate_all:
+        for style in ICON_STYLES:
+            create_icon_pack(style, output_dir, verbose=args.verbose)
+    elif args.install:
+        pack_dir = output_dir / args.install
+        if pack_dir.exists():
+            if install_icon_pack(pack_dir):
+                print(f"  {C.GREEN}✓{C.RST} Installed: {args.install}")
+        else:
+            print(f"  {C.RED}✗{C.RST} Pack not found: {args.install}")
+    elif args.apply:
+        if apply_icon_theme(args.apply):
+            print(f"  {C.GREEN}✓{C.RST} Applied: {args.apply}")
+    else:
+        interactive_menu()
+    
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

@@ -1,0 +1,408 @@
+#!/usr/bin/env python3
+"""
+NullSec Shred - Secure File Destroyer
+=====================================
+Military-grade secure file deletion utility.
+
+Overwrite Patterns:
+- DoD 5220.22-M: 3-pass overwrite (zeros, ones, random)
+- Gutmann: 35-pass overwrite for maximum security
+- Random: Configurable number of random passes
+- Quick: Single pass with random data
+
+(c) bad-antics development
+"""
+
+import os
+import sys
+import argparse
+import secrets
+import stat
+import time
+from pathlib import Path
+from typing import List, Generator
+
+# ============================================================================
+# Colors
+# ============================================================================
+
+class C:
+    RST = '\033[0m'
+    BLD = '\033[1m'
+    DIM = '\033[2m'
+    RED = '\033[0;31m'
+    GRN = '\033[0;32m'
+    YLW = '\033[0;33m'
+    CYN = '\033[0;36m'
+
+# ============================================================================
+# Overwrite Patterns
+# ============================================================================
+
+# DoD 5220.22-M pattern (simplified 3-pass)
+DOD_PATTERNS = [
+    b'\x00',  # Pass 1: zeros
+    b'\xff',  # Pass 2: ones
+    None,     # Pass 3: random
+]
+
+# Gutmann 35-pass pattern
+GUTMANN_PATTERNS = [
+    None, None, None, None,  # 1-4: random
+    b'\x55', b'\xaa', b'\x92\x49\x24', b'\x49\x24\x92',  # 5-8
+    b'\x24\x92\x49', b'\x00', b'\x11', b'\x22',  # 9-12
+    b'\x33', b'\x44', b'\x55', b'\x66',  # 13-16
+    b'\x77', b'\x88', b'\x99', b'\xaa',  # 17-20
+    b'\xbb', b'\xcc', b'\xdd', b'\xee',  # 21-24
+    b'\xff', b'\x92\x49\x24', b'\x49\x24\x92', b'\x24\x92\x49',  # 25-28
+    b'\x6d\xb6\xdb', b'\xb6\xdb\x6d', b'\xdb\x6d\xb6',  # 29-31
+    None, None, None, None,  # 32-35: random
+]
+
+# ============================================================================
+# Secure Overwrite Functions
+# ============================================================================
+
+def get_random_block(size: int) -> bytes:
+    """Generate cryptographically secure random bytes."""
+    return secrets.token_bytes(size)
+
+
+def overwrite_with_pattern(filepath: str, pattern: bytes, block_size: int = 65536) -> None:
+    """Overwrite file with specified pattern."""
+    file_size = os.path.getsize(filepath)
+    
+    # Prepare pattern block
+    if pattern is None:
+        # Random pattern
+        with open(filepath, 'r+b') as f:
+            written = 0
+            while written < file_size:
+                chunk_size = min(block_size, file_size - written)
+                f.write(get_random_block(chunk_size))
+                written += chunk_size
+            f.flush()
+            os.fsync(f.fileno())
+    else:
+        # Fixed pattern
+        pattern_block = (pattern * (block_size // len(pattern) + 1))[:block_size]
+        
+        with open(filepath, 'r+b') as f:
+            written = 0
+            while written < file_size:
+                chunk_size = min(block_size, file_size - written)
+                f.write(pattern_block[:chunk_size])
+                written += chunk_size
+            f.flush()
+            os.fsync(f.fileno())
+
+
+def secure_delete_file(filepath: str, passes: int = 3, method: str = 'dod',
+                       verbose: bool = False) -> bool:
+    """
+    Securely delete a file using specified method.
+    
+    Methods:
+    - 'quick': 1 random pass
+    - 'dod': DoD 5220.22-M 3-pass
+    - 'gutmann': Gutmann 35-pass
+    - 'random': N random passes
+    """
+    try:
+        # Get file info
+        file_size = os.path.getsize(filepath)
+        
+        if file_size == 0:
+            # Just delete empty files
+            os.unlink(filepath)
+            return True
+        
+        # Select patterns based on method
+        if method == 'quick':
+            patterns = [None]  # Single random pass
+        elif method == 'dod':
+            patterns = DOD_PATTERNS
+        elif method == 'gutmann':
+            patterns = GUTMANN_PATTERNS
+        elif method == 'random':
+            patterns = [None] * passes
+        else:
+            patterns = DOD_PATTERNS
+        
+        total_passes = len(patterns)
+        
+        # Remove read-only attribute if present
+        try:
+            os.chmod(filepath, stat.S_IRUSR | stat.S_IWUSR)
+        except Exception:
+            pass
+        
+        # Overwrite passes
+        for i, pattern in enumerate(patterns, 1):
+            if verbose:
+                progress = f"[{i}/{total_passes}]"
+                if pattern is None:
+                    print(f"  {C.DIM}{progress} Overwriting with random data...{C.RST}")
+                else:
+                    print(f"  {C.DIM}{progress} Overwriting with pattern...{C.RST}")
+            
+            overwrite_with_pattern(filepath, pattern)
+        
+        # Truncate file to zero
+        with open(filepath, 'w') as f:
+            pass
+        
+        # Rename file randomly before deletion
+        directory = os.path.dirname(filepath) or '.'
+        random_name = secrets.token_hex(16)
+        new_path = os.path.join(directory, random_name)
+        
+        os.rename(filepath, new_path)
+        
+        # Finally delete
+        os.unlink(new_path)
+        
+        return True
+        
+    except PermissionError:
+        print(f"  {C.RED}[!] Permission denied: {filepath}{C.RST}")
+        return False
+    except Exception as e:
+        print(f"  {C.RED}[!] Error shredding {filepath}: {e}{C.RST}")
+        return False
+
+
+def secure_delete_directory(dirpath: str, method: str = 'dod',
+                           verbose: bool = False) -> Tuple[int, int]:
+    """
+    Recursively and securely delete a directory.
+    Returns (success_count, fail_count).
+    """
+    success = 0
+    failed = 0
+    
+    # Process all files first
+    for root, dirs, files in os.walk(dirpath, topdown=False):
+        for name in files:
+            filepath = os.path.join(root, name)
+            if verbose:
+                print(f"  {C.CYN}Shredding:{C.RST} {filepath}")
+            
+            if secure_delete_file(filepath, method=method, verbose=verbose):
+                success += 1
+            else:
+                failed += 1
+        
+        # Remove empty directories
+        for name in dirs:
+            try:
+                os.rmdir(os.path.join(root, name))
+            except Exception:
+                pass
+    
+    # Remove root directory
+    try:
+        os.rmdir(dirpath)
+    except Exception:
+        pass
+    
+    return success, failed
+
+
+def shred_free_space(path: str, verbose: bool = False) -> bool:
+    """
+    Overwrite free space on filesystem.
+    Creates temp files filled with random data until disk is full.
+    """
+    print(f"  {C.YLW}[!] This will temporarily fill the disk with random data{C.RST}")
+    print(f"  {C.DIM}Press Ctrl+C to cancel{C.RST}\n")
+    
+    temp_dir = os.path.join(path, '.nullsec_shred_temp')
+    os.makedirs(temp_dir, exist_ok=True)
+    
+    block_size = 1024 * 1024  # 1MB blocks
+    file_count = 0
+    total_written = 0
+    
+    try:
+        while True:
+            filename = os.path.join(temp_dir, f'shred_{file_count:04d}')
+            
+            with open(filename, 'wb') as f:
+                try:
+                    while True:
+                        f.write(get_random_block(block_size))
+                        total_written += block_size
+                        
+                        if verbose:
+                            print(f"\r  {C.DIM}Written: {total_written // (1024*1024)} MB{C.RST}", end='')
+                            
+                except IOError:
+                    # Disk full
+                    break
+            
+            file_count += 1
+            
+    except KeyboardInterrupt:
+        print(f"\n  {C.YLW}[!] Cancelled{C.RST}")
+    
+    # Clean up temp files
+    print(f"\n  {C.DIM}Cleaning up temporary files...{C.RST}")
+    
+    for i in range(file_count + 1):
+        try:
+            os.unlink(os.path.join(temp_dir, f'shred_{i:04d}'))
+        except Exception:
+            pass
+    
+    try:
+        os.rmdir(temp_dir)
+    except Exception:
+        pass
+    
+    print(f"  {C.GRN}[+] Free space overwritten: {total_written // (1024*1024)} MB{C.RST}")
+    return True
+
+
+# ============================================================================
+# CLI Interface
+# ============================================================================
+
+def print_banner():
+    """Print application banner."""
+    print(f"""
+{C.CYN}  ╔═══════════════════════════════════════════════════════════╗
+  ║                    NULLSEC SHRED                          ║
+  ║               Secure File Destroyer                       ║
+  ╚═══════════════════════════════════════════════════════════╝{C.RST}
+""")
+
+
+def confirm_deletion(paths: List[str], method: str) -> bool:
+    """Confirm deletion with user."""
+    print(f"  {C.RED}WARNING: This operation is IRREVERSIBLE!{C.RST}")
+    print(f"  {C.DIM}Method: {method.upper()}{C.RST}\n")
+    
+    print(f"  Files/directories to be destroyed:")
+    for p in paths[:10]:
+        print(f"    {C.RED}✗{C.RST} {p}")
+    
+    if len(paths) > 10:
+        print(f"    {C.DIM}... and {len(paths) - 10} more{C.RST}")
+    
+    print()
+    response = input(f"  {C.YLW}Type 'DESTROY' to confirm:{C.RST} ")
+    
+    return response == 'DESTROY'
+
+
+def main():
+    """Main entry point."""
+    parser = argparse.ArgumentParser(
+        description='NullSec Shred - Secure File Destroyer',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Methods:
+  quick     Single random pass (fast)
+  dod       DoD 5220.22-M 3-pass (default)
+  gutmann   Gutmann 35-pass (paranoid)
+  random    N random passes (use -n)
+
+Examples:
+  %(prog)s secret.txt                # DoD method
+  %(prog)s -m gutmann secret.txt     # Gutmann 35-pass
+  %(prog)s -m quick -f *.tmp         # Quick delete, no confirm
+  %(prog)s -r secret_folder/         # Recursive delete
+  %(prog)s --wipe-free /home         # Wipe free space
+        """
+    )
+    
+    parser.add_argument('paths', nargs='*', help='Files or directories to shred')
+    parser.add_argument('-m', '--method', choices=['quick', 'dod', 'gutmann', 'random'],
+                        default='dod', help='Shred method (default: dod)')
+    parser.add_argument('-n', '--passes', type=int, default=3,
+                        help='Number of passes for random method')
+    parser.add_argument('-r', '--recursive', action='store_true',
+                        help='Recursively shred directories')
+    parser.add_argument('-f', '--force', action='store_true',
+                        help='Skip confirmation prompt')
+    parser.add_argument('-v', '--verbose', action='store_true',
+                        help='Verbose output')
+    parser.add_argument('--wipe-free', metavar='PATH',
+                        help='Wipe free space on filesystem')
+    
+    args = parser.parse_args()
+    
+    print_banner()
+    
+    # Wipe free space mode
+    if args.wipe_free:
+        if not args.force and not confirm_deletion([args.wipe_free], 'free-space-wipe'):
+            print(f"  {C.DIM}Operation cancelled{C.RST}\n")
+            return 0
+        
+        shred_free_space(args.wipe_free, args.verbose)
+        return 0
+    
+    # Normal shred mode
+    if not args.paths:
+        parser.print_help()
+        return 1
+    
+    # Expand paths
+    paths = []
+    for p in args.paths:
+        if os.path.exists(p):
+            paths.append(p)
+        else:
+            print(f"  {C.YLW}[!] Not found: {p}{C.RST}")
+    
+    if not paths:
+        print(f"  {C.RED}[!] No valid files specified{C.RST}\n")
+        return 1
+    
+    # Confirm deletion
+    if not args.force:
+        if not confirm_deletion(paths, args.method):
+            print(f"  {C.DIM}Operation cancelled{C.RST}\n")
+            return 0
+    
+    print()
+    
+    # Process each path
+    success_count = 0
+    fail_count = 0
+    
+    for path in paths:
+        if os.path.isdir(path):
+            if args.recursive:
+                print(f"  {C.CYN}Shredding directory:{C.RST} {path}")
+                s, f = secure_delete_directory(path, args.method, args.verbose)
+                success_count += s
+                fail_count += f
+            else:
+                print(f"  {C.YLW}[!] Skipping directory (use -r): {path}{C.RST}")
+                continue
+        else:
+            if args.verbose:
+                print(f"  {C.CYN}Shredding:{C.RST} {path}")
+            
+            if secure_delete_file(path, args.passes, args.method, args.verbose):
+                success_count += 1
+                if not args.verbose:
+                    print(f"  {C.GRN}✓{C.RST} {path}")
+            else:
+                fail_count += 1
+    
+    # Summary
+    print(f"\n  {C.BLD}Summary:{C.RST}")
+    print(f"  {C.GRN}Destroyed:{C.RST} {success_count}")
+    if fail_count:
+        print(f"  {C.RED}Failed:{C.RST} {fail_count}")
+    print()
+    
+    return 0 if fail_count == 0 else 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())

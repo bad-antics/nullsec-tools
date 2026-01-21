@@ -1,0 +1,378 @@
+#!/usr/bin/env python3
+"""
+NullSec Whisper - Encrypted Channel
+==============================
+Secure end-to-end encrypted messaging system.
+
+This tool provides a covert encrypted communication channel:
+1. Type messages in the terminal
+2. Automatically encrypts and copies to clipboard
+3. Send encrypted text through any channel
+4. Incoming encrypted messages can be decrypted
+
+Both parties must use the same shared key.
+
+(c) bad-antics development
+"""
+
+import sys
+import os
+import signal
+import threading
+import queue
+import time
+import getpass
+import subprocess
+from typing import Optional
+
+# Import the core encryption module
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    from importlib.util import spec_from_loader, module_from_spec
+    from importlib.machinery import SourceFileLoader
+    
+    spec = spec_from_loader("nullsec_crypt", SourceFileLoader("nullsec_crypt", 
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "nullsec-crypt")))
+    crypt = module_from_spec(spec)
+    spec.loader.exec_module(crypt)
+except Exception:
+    # Direct import fallback
+    crypt_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nullsec-crypt")
+    with open(crypt_path, 'r') as f:
+        crypt_code = f.read()
+    crypt = type(sys)('crypt')
+    exec(crypt_code, crypt.__dict__)
+
+
+# ============================================================================
+# Terminal Colors
+# ============================================================================
+
+class C:
+    """ANSI color codes."""
+    RST = '\033[0m'
+    CYN = '\033[0;36m'
+    GRN = '\033[0;32m'
+    RED = '\033[0;31m'
+    YLW = '\033[0;33m'
+    MAG = '\033[0;35m'
+    BLD = '\033[1m'
+    DIM = '\033[2m'
+
+
+# ============================================================================
+# Clipboard Operations
+# ============================================================================
+
+def copy_to_clipboard(text: str) -> bool:
+    """Copy text to system clipboard."""
+    try:
+        # Try xclip first
+        proc = subprocess.Popen(
+            ['xclip', '-selection', 'clipboard'],
+            stdin=subprocess.PIPE,
+            stderr=subprocess.DEVNULL
+        )
+        proc.communicate(text.encode('utf-8'))
+        return proc.returncode == 0
+    except FileNotFoundError:
+        pass
+    
+    try:
+        # Try xsel
+        proc = subprocess.Popen(
+            ['xsel', '--clipboard', '--input'],
+            stdin=subprocess.PIPE,
+            stderr=subprocess.DEVNULL
+        )
+        proc.communicate(text.encode('utf-8'))
+        return proc.returncode == 0
+    except FileNotFoundError:
+        pass
+    
+    try:
+        # Try wl-copy (Wayland)
+        proc = subprocess.Popen(
+            ['wl-copy'],
+            stdin=subprocess.PIPE,
+            stderr=subprocess.DEVNULL
+        )
+        proc.communicate(text.encode('utf-8'))
+        return proc.returncode == 0
+    except FileNotFoundError:
+        pass
+    
+    return False
+
+
+def get_from_clipboard() -> Optional[str]:
+    """Get text from system clipboard."""
+    try:
+        result = subprocess.run(
+            ['xclip', '-selection', 'clipboard', '-o'],
+            capture_output=True,
+            text=True
+        )
+        if result.returncode == 0:
+            return result.stdout
+    except FileNotFoundError:
+        pass
+    
+    try:
+        result = subprocess.run(
+            ['xsel', '--clipboard', '--output'],
+            capture_output=True,
+            text=True
+        )
+        if result.returncode == 0:
+            return result.stdout
+    except FileNotFoundError:
+        pass
+    
+    try:
+        result = subprocess.run(
+            ['wl-paste'],
+            capture_output=True,
+            text=True
+        )
+        if result.returncode == 0:
+            return result.stdout
+    except FileNotFoundError:
+        pass
+    
+    return None
+
+
+# ============================================================================
+# Encrypted Chat Session
+# ============================================================================
+
+class EncryptedChatSession:
+    """Manages an encrypted chat session."""
+    
+    def __init__(self, passphrase: str):
+        self.passphrase = passphrase
+        self.running = False
+        self.message_count = 0
+        
+    def encrypt_and_copy(self, message: str) -> Optional[str]:
+        """Encrypt message and copy to clipboard."""
+        try:
+            encrypted = crypt.encrypt_message(self.passphrase, message)
+            if copy_to_clipboard(encrypted):
+                return encrypted
+            return encrypted
+        except crypt.CryptError as e:
+            print(f"  {C.RED}[!] Encryption error: {e}{C.RST}")
+            return None
+    
+    def decrypt_clipboard(self) -> Optional[str]:
+        """Decrypt message from clipboard."""
+        clipboard = get_from_clipboard()
+        if not clipboard:
+            print(f"  {C.RED}[!] Clipboard is empty{C.RST}")
+            return None
+        
+        # Check if it looks like our encrypted format
+        clipboard = clipboard.strip()
+        if not clipboard.startswith('PE$') and 'NSC1' not in clipboard[:10]:
+            print(f"  {C.YLW}[!] Clipboard doesn't contain NullSec encrypted message{C.RST}")
+            return None
+        
+        try:
+            decrypted = crypt.decrypt_message(self.passphrase, clipboard)
+            return decrypted
+        except crypt.DecryptionError as e:
+            print(f"  {C.RED}[!] Decryption failed: {e}{C.RST}")
+            return None
+    
+    def decrypt_text(self, ciphertext: str) -> Optional[str]:
+        """Decrypt provided ciphertext."""
+        try:
+            return crypt.decrypt_message(self.passphrase, ciphertext.strip())
+        except crypt.DecryptionError as e:
+            print(f"  {C.RED}[!] Decryption failed: {e}{C.RST}")
+            return None
+
+
+def print_banner():
+    """Print application banner."""
+    print(f"""
+{C.CYN}  ╔════════════════════════════════════════════════════════════╗
+  ║                   NULLSEC WHISPER                          ║
+  ║                   bad-antics development                   ║
+  ╚════════════════════════════════════════════════════════════╝{C.RST}
+""")
+
+
+def print_commands():
+    """Print available commands."""
+    print(f"""
+  {C.BLD}Commands:{C.RST}
+    {C.CYN}/send <msg>{C.RST}  - Encrypt message & copy to clipboard
+    {C.CYN}/read{C.RST}        - Decrypt message from clipboard
+    {C.CYN}/decrypt{C.RST}     - Paste and decrypt a message
+    {C.CYN}/key{C.RST}         - Show current session key hash
+    {C.CYN}/clear{C.RST}       - Clear screen
+    {C.CYN}/help{C.RST}        - Show this help
+    {C.CYN}/quit{C.RST}        - Exit chat
+
+  {C.BLD}Quick Mode:{C.RST}
+    Just type a message and press Enter to encrypt & copy.
+    Type a ciphertext starting with 'PE$' to auto-decrypt.
+""")
+
+
+def run_chat():
+    """Run the encrypted chat interface."""
+    print_banner()
+    
+    # Get shared passphrase
+    print(f"  {C.BLD}Session Setup{C.RST}")
+    print(f"  {C.DIM}Share this passphrase securely with your chat partner{C.RST}")
+    print()
+    
+    while True:
+        passphrase = getpass.getpass(f"  {C.CYN}Enter shared passphrase:{C.RST} ")
+        if len(passphrase) < 12:
+            print(f"  {C.RED}[!] Passphrase must be at least 12 characters{C.RST}")
+            continue
+        
+        confirm = getpass.getpass(f"  {C.CYN}Confirm passphrase:{C.RST} ")
+        if passphrase != confirm:
+            print(f"  {C.RED}[!] Passphrases don't match{C.RST}")
+            continue
+        break
+    
+    session = EncryptedChatSession(passphrase)
+    
+    # Show key fingerprint for verification
+    import hashlib
+    key_hash = hashlib.sha256(passphrase.encode()).hexdigest()[:16].upper()
+    print(f"\n  {C.GRN}[+] Session established{C.RST}")
+    print(f"  {C.DIM}Key fingerprint: {key_hash}{C.RST}")
+    print(f"  {C.DIM}Verify this matches your partner's fingerprint{C.RST}")
+    
+    print_commands()
+    
+    # Main chat loop
+    session.running = True
+    
+    while session.running:
+        try:
+            user_input = input(f"\n  {C.GRN}>{C.RST} ").strip()
+            
+            if not user_input:
+                continue
+            
+            # Commands
+            if user_input.startswith('/'):
+                cmd_parts = user_input[1:].split(' ', 1)
+                cmd = cmd_parts[0].lower()
+                arg = cmd_parts[1] if len(cmd_parts) > 1 else ''
+                
+                if cmd in ('quit', 'exit', 'q'):
+                    print(f"\n  {C.DIM}[*] Ending encrypted session{C.RST}\n")
+                    session.running = False
+                    
+                elif cmd == 'send':
+                    if not arg:
+                        print(f"  {C.RED}[!] Usage: /send <message>{C.RST}")
+                        continue
+                    
+                    encrypted = session.encrypt_and_copy(arg)
+                    if encrypted:
+                        session.message_count += 1
+                        print(f"  {C.GRN}[+] Message #{session.message_count} encrypted{C.RST}")
+                        print(f"  {C.DIM}Copied to clipboard - send via any channel{C.RST}")
+                        print(f"\n  {C.MAG}{encrypted[:60]}...{C.RST}")
+                        
+                elif cmd == 'read':
+                    decrypted = session.decrypt_clipboard()
+                    if decrypted:
+                        print(f"\n  {C.CYN}┌{'─' * 58}┐{C.RST}")
+                        for line in decrypted.split('\n'):
+                            print(f"  {C.CYN}│{C.RST} {line}")
+                        print(f"  {C.CYN}└{'─' * 58}┘{C.RST}")
+                        
+                elif cmd == 'decrypt':
+                    print(f"  {C.CYN}Paste encrypted message (Enter twice to finish):{C.RST}")
+                    lines = []
+                    empty_count = 0
+                    while empty_count < 1:
+                        line = input("  ")
+                        if not line:
+                            empty_count += 1
+                        else:
+                            empty_count = 0
+                            lines.append(line)
+                    
+                    if lines:
+                        ciphertext = ''.join(lines).replace(' ', '')
+                        decrypted = session.decrypt_text(ciphertext)
+                        if decrypted:
+                            print(f"\n  {C.CYN}┌{'─' * 58}┐{C.RST}")
+                            for line in decrypted.split('\n'):
+                                print(f"  {C.CYN}│{C.RST} {line}")
+                            print(f"  {C.CYN}└{'─' * 58}┘{C.RST}")
+                            
+                elif cmd == 'key':
+                    print(f"  {C.YLW}Key fingerprint: {key_hash}{C.RST}")
+                    
+                elif cmd == 'clear':
+                    os.system('clear' if os.name != 'nt' else 'cls')
+                    print_banner()
+                    print(f"  {C.DIM}Session active | Key: {key_hash}{C.RST}")
+                    
+                elif cmd == 'help':
+                    print_commands()
+                    
+                else:
+                    print(f"  {C.RED}[!] Unknown command: /{cmd}{C.RST}")
+                    
+            # Auto-detect encrypted message
+            elif user_input.startswith('PE$') or user_input.startswith('NSC1'):
+                decrypted = session.decrypt_text(user_input)
+                if decrypted:
+                    print(f"\n  {C.CYN}┌{'─' * 58}┐{C.RST}")
+                    for line in decrypted.split('\n'):
+                        print(f"  {C.CYN}│{C.RST} {line}")
+                    print(f"  {C.CYN}└{'─' * 58}┘{C.RST}")
+                    
+            # Quick encrypt mode - encrypt and copy
+            else:
+                encrypted = session.encrypt_and_copy(user_input)
+                if encrypted:
+                    session.message_count += 1
+                    print(f"  {C.GRN}[+] Encrypted & copied to clipboard{C.RST}")
+                    print(f"\n  {C.MAG}{encrypted}{C.RST}")
+                
+        except KeyboardInterrupt:
+            print(f"\n\n  {C.DIM}[*] Use /quit to exit{C.RST}")
+        except EOFError:
+            session.running = False
+    
+    # Cleanup
+    print(f"  {C.DIM}Session destroyed. Messages: {session.message_count}{C.RST}\n")
+
+
+def main():
+    """Main entry point."""
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='NullSec Whisper - Encrypted Channel')
+    parser.add_argument('--version', action='version', version='1.0.0')
+    
+    args = parser.parse_args()
+    
+    try:
+        run_chat()
+    except Exception as e:
+        print(f"\n  {C.RED}[!] Fatal error: {e}{C.RST}\n")
+        return 1
+    
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

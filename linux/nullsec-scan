@@ -1,0 +1,677 @@
+#!/usr/bin/env python3
+"""
+NullSec Scan - Network and Vulnerability Scanner
+================================================
+Comprehensive security scanning and reconnaissance tool.
+
+(c) bad-antics development
+"""
+
+import os
+import sys
+import socket
+import struct
+import threading
+import time
+import json
+import argparse
+import subprocess
+import re
+from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Optional, List, Dict, Tuple, Set
+from dataclasses import dataclass, field
+from collections import defaultdict
+
+# ============================================================================
+# Colors
+# ============================================================================
+
+class C:
+    RST = '\033[0m'
+    BLD = '\033[1m'
+    DIM = '\033[2m'
+    RED = '\033[0;31m'
+    GREEN = '\033[0;32m'
+    YELLOW = '\033[0;33m'
+    BLUE = '\033[0;34m'
+    CYAN = '\033[0;36m'
+
+# ============================================================================
+# Configuration
+# ============================================================================
+
+VERSION = '1.0.0'
+CONFIG_DIR = Path.home() / '.config' / 'nullsec-scan'
+RESULTS_DIR = Path.home() / 'NullSec-Scans'
+
+# Common ports for quick scan
+COMMON_PORTS = [
+    21, 22, 23, 25, 53, 80, 110, 111, 135, 139, 143, 443, 445, 993, 995,
+    1433, 1521, 3306, 3389, 5432, 5900, 6379, 8080, 8443, 27017
+]
+
+# Service signatures
+SERVICE_SIGNATURES = {
+    'ssh': re.compile(b'SSH-'),
+    'http': re.compile(b'HTTP/'),
+    'ftp': re.compile(b'220.*FTP', re.IGNORECASE),
+    'smtp': re.compile(b'220.*SMTP', re.IGNORECASE),
+    'mysql': re.compile(b'mysql', re.IGNORECASE),
+    'postgresql': re.compile(b'PostgreSQL'),
+    'redis': re.compile(b'-ERR|\\+PONG'),
+    'mongodb': re.compile(b'MongoDB'),
+}
+
+# ============================================================================
+# Data Classes
+# ============================================================================
+
+@dataclass
+class PortResult:
+    """Result of a port scan."""
+    port: int
+    state: str  # open, closed, filtered
+    service: str = ''
+    banner: str = ''
+    version: str = ''
+
+
+@dataclass
+class HostResult:
+    """Result of a host scan."""
+    ip: str
+    hostname: str = ''
+    mac: str = ''
+    os: str = ''
+    ports: List[PortResult] = field(default_factory=list)
+    response_time: float = 0
+    is_up: bool = False
+
+
+@dataclass
+class ScanResult:
+    """Complete scan result."""
+    target: str
+    scan_type: str
+    start_time: float
+    end_time: float = 0
+    hosts: List[HostResult] = field(default_factory=list)
+    
+    @property
+    def duration(self) -> float:
+        return self.end_time - self.start_time if self.end_time else 0
+    
+    def to_dict(self) -> dict:
+        return {
+            'target': self.target,
+            'scan_type': self.scan_type,
+            'duration': self.duration,
+            'hosts': [
+                {
+                    'ip': h.ip,
+                    'hostname': h.hostname,
+                    'os': h.os,
+                    'is_up': h.is_up,
+                    'ports': [
+                        {'port': p.port, 'state': p.state, 'service': p.service, 'banner': p.banner}
+                        for p in h.ports
+                    ]
+                }
+                for h in self.hosts
+            ]
+        }
+
+
+# ============================================================================
+# Network Utilities
+# ============================================================================
+
+def resolve_hostname(hostname: str) -> Optional[str]:
+    """Resolve hostname to IP."""
+    try:
+        return socket.gethostbyname(hostname)
+    except socket.gaierror:
+        return None
+
+
+def reverse_dns(ip: str) -> str:
+    """Reverse DNS lookup."""
+    try:
+        return socket.gethostbyaddr(ip)[0]
+    except (socket.herror, socket.gaierror):
+        return ''
+
+
+def parse_target(target: str) -> List[str]:
+    """Parse target specification to list of IPs."""
+    ips = []
+    
+    # Single IP or hostname
+    if '/' not in target and '-' not in target:
+        ip = resolve_hostname(target) if not target.replace('.', '').isdigit() else target
+        if ip:
+            ips.append(ip)
+        return ips
+    
+    # CIDR notation (e.g., 192.168.1.0/24)
+    if '/' in target:
+        try:
+            base, prefix = target.split('/')
+            prefix = int(prefix)
+            
+            parts = base.split('.')
+            base_int = sum(int(p) << (24 - 8*i) for i, p in enumerate(parts))
+            
+            num_hosts = 2 ** (32 - prefix)
+            network = base_int & ((0xFFFFFFFF << (32 - prefix)) & 0xFFFFFFFF)
+            
+            for i in range(1, min(num_hosts - 1, 256)):  # Limit to 255 hosts
+                ip_int = network + i
+                ip = '.'.join(str((ip_int >> (24 - 8*j)) & 0xFF) for j in range(4))
+                ips.append(ip)
+        except Exception:
+            pass
+        return ips
+    
+    # Range notation (e.g., 192.168.1.1-50)
+    if '-' in target:
+        try:
+            base, end = target.rsplit('-', 1)
+            parts = base.split('.')
+            start = int(parts[-1])
+            end = int(end)
+            
+            prefix = '.'.join(parts[:-1])
+            for i in range(start, end + 1):
+                ips.append(f'{prefix}.{i}')
+        except Exception:
+            pass
+    
+    return ips
+
+
+# ============================================================================
+# Port Scanner
+# ============================================================================
+
+class PortScanner:
+    """TCP port scanner."""
+    
+    def __init__(self, timeout: float = 1.0, threads: int = 100):
+        self.timeout = timeout
+        self.threads = threads
+    
+    def scan_port(self, ip: str, port: int) -> PortResult:
+        """Scan a single port."""
+        result = PortResult(port=port, state='closed')
+        
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(self.timeout)
+            
+            start = time.time()
+            status = sock.connect_ex((ip, port))
+            
+            if status == 0:
+                result.state = 'open'
+                
+                # Try to grab banner
+                try:
+                    sock.settimeout(0.5)
+                    sock.send(b'\r\n')
+                    banner = sock.recv(1024)
+                    result.banner = banner.decode('utf-8', errors='replace').strip()[:100]
+                    
+                    # Identify service
+                    for service, pattern in SERVICE_SIGNATURES.items():
+                        if pattern.search(banner):
+                            result.service = service
+                            break
+                except Exception:
+                    pass
+            
+            sock.close()
+            
+        except socket.timeout:
+            result.state = 'filtered'
+        except Exception:
+            pass
+        
+        return result
+    
+    def scan_host(self, ip: str, ports: List[int] = None) -> HostResult:
+        """Scan all ports on a host."""
+        if ports is None:
+            ports = COMMON_PORTS
+        
+        host = HostResult(ip=ip)
+        
+        # Check if host is up with ICMP (if possible) or TCP
+        host.is_up = self._ping(ip) or self._tcp_ping(ip)
+        
+        if not host.is_up:
+            return host
+        
+        host.hostname = reverse_dns(ip)
+        
+        # Scan ports with thread pool
+        with ThreadPoolExecutor(max_workers=self.threads) as executor:
+            futures = {executor.submit(self.scan_port, ip, port): port for port in ports}
+            
+            for future in as_completed(futures):
+                result = future.result()
+                if result.state == 'open':
+                    host.ports.append(result)
+        
+        host.ports.sort(key=lambda x: x.port)
+        return host
+    
+    def _ping(self, ip: str) -> bool:
+        """ICMP ping."""
+        try:
+            result = subprocess.run(
+                ['ping', '-c', '1', '-W', '1', ip],
+                capture_output=True,
+                timeout=2
+            )
+            return result.returncode == 0
+        except Exception:
+            return False
+    
+    def _tcp_ping(self, ip: str) -> bool:
+        """TCP ping on common ports."""
+        for port in [80, 443, 22]:
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(0.5)
+                result = sock.connect_ex((ip, port))
+                sock.close()
+                if result == 0:
+                    return True
+            except Exception:
+                pass
+        return False
+
+
+# ============================================================================
+# Service Detection
+# ============================================================================
+
+def detect_service(ip: str, port: int) -> Dict:
+    """Detect service on port."""
+    info = {
+        'service': '',
+        'version': '',
+        'banner': '',
+    }
+    
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(2)
+        sock.connect((ip, port))
+        
+        # Send probe based on port
+        probes = {
+            80: b'GET / HTTP/1.1\r\nHost: %s\r\n\r\n' % ip.encode(),
+            443: b'GET / HTTP/1.1\r\nHost: %s\r\n\r\n' % ip.encode(),
+            21: b'\r\n',
+            22: b'\r\n',
+            25: b'EHLO test\r\n',
+            110: b'\r\n',
+            143: b'\r\n',
+        }
+        
+        probe = probes.get(port, b'\r\n')
+        sock.send(probe)
+        
+        response = sock.recv(2048)
+        info['banner'] = response.decode('utf-8', errors='replace')[:200]
+        
+        # Parse service from response
+        for service, pattern in SERVICE_SIGNATURES.items():
+            if pattern.search(response):
+                info['service'] = service
+                break
+        
+        # Try to extract version
+        version_patterns = [
+            (r'SSH-(\d+\.\d+)', 'ssh'),
+            (r'Server: ([^\r\n]+)', 'http'),
+            (r'220[- ]([^\r\n]+)', 'ftp'),
+            (r'(\d+\.\d+\.\d+)', 'generic'),
+        ]
+        
+        for pattern, _ in version_patterns:
+            match = re.search(pattern, info['banner'])
+            if match:
+                info['version'] = match.group(1)
+                break
+        
+        sock.close()
+        
+    except Exception:
+        pass
+    
+    return info
+
+
+# ============================================================================
+# Vulnerability Checks
+# ============================================================================
+
+def check_common_vulns(ip: str, ports: List[PortResult]) -> List[Dict]:
+    """Check for common vulnerabilities."""
+    vulns = []
+    
+    for port in ports:
+        # Anonymous FTP
+        if port.port == 21:
+            if check_anonymous_ftp(ip):
+                vulns.append({
+                    'severity': 'medium',
+                    'port': 21,
+                    'title': 'Anonymous FTP Access',
+                    'description': 'FTP server allows anonymous login'
+                })
+        
+        # Default credentials (basic check)
+        if port.port in [22, 3389, 5900]:
+            vulns.append({
+                'severity': 'info',
+                'port': port.port,
+                'title': 'Remote Access Service',
+                'description': f'Remote access on port {port.port} - verify authentication'
+            })
+        
+        # Unencrypted services
+        if port.port in [21, 23, 25, 110, 143]:
+            vulns.append({
+                'severity': 'low',
+                'port': port.port,
+                'title': 'Unencrypted Service',
+                'description': f'Service on port {port.port} may transmit data unencrypted'
+            })
+    
+    return vulns
+
+
+def check_anonymous_ftp(ip: str) -> bool:
+    """Check if FTP allows anonymous login."""
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(3)
+        sock.connect((ip, 21))
+        
+        sock.recv(1024)  # Banner
+        sock.send(b'USER anonymous\r\n')
+        sock.recv(1024)
+        sock.send(b'PASS anonymous@\r\n')
+        response = sock.recv(1024)
+        
+        sock.close()
+        return b'230' in response
+        
+    except Exception:
+        return False
+
+
+# ============================================================================
+# Output Formatting
+# ============================================================================
+
+def print_host_result(host: HostResult, verbose: bool = False):
+    """Print host scan result."""
+    status = f"{C.GREEN}UP{C.RST}" if host.is_up else f"{C.RED}DOWN{C.RST}"
+    
+    print(f"\n  {C.BLD}{host.ip}{C.RST} ({host.hostname or 'unknown'}) - {status}")
+    
+    if host.is_up and host.ports:
+        print(f"  {C.DIM}{'─' * 50}{C.RST}")
+        print(f"  {C.BLD}{'PORT':<10} {'STATE':<10} {'SERVICE':<15} {'BANNER'}{C.RST}")
+        
+        for port in host.ports:
+            state_color = C.GREEN if port.state == 'open' else C.YELLOW
+            banner = port.banner[:30] + '...' if len(port.banner) > 30 else port.banner
+            print(f"  {port.port:<10} {state_color}{port.state:<10}{C.RST} {port.service:<15} {C.DIM}{banner}{C.RST}")
+
+
+def print_scan_summary(result: ScanResult):
+    """Print scan summary."""
+    print(f"\n  {C.BLD}Scan Summary:{C.RST}")
+    print(f"  {C.CYAN}Target:{C.RST}    {result.target}")
+    print(f"  {C.CYAN}Type:{C.RST}      {result.scan_type}")
+    print(f"  {C.CYAN}Duration:{C.RST}  {result.duration:.2f}s")
+    print(f"  {C.CYAN}Hosts up:{C.RST}  {sum(1 for h in result.hosts if h.is_up)}/{len(result.hosts)}")
+    
+    total_ports = sum(len(h.ports) for h in result.hosts)
+    print(f"  {C.CYAN}Open ports:{C.RST} {total_ports}")
+
+
+def save_results(result: ScanResult, output_path: Path):
+    """Save scan results to file."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    data = result.to_dict()
+    output_path.write_text(json.dumps(data, indent=2))
+    print(f"\n  {C.GREEN}✓{C.RST} Results saved to: {output_path}")
+
+
+# ============================================================================
+# User Interface
+# ============================================================================
+
+def print_banner():
+    """Print banner."""
+    print(f"""
+  {C.GREEN}╔═══════════════════════════════════════╗{C.RST}
+  {C.GREEN}║{C.RST}    {C.BLD}NullSec Scan - Network Scanner{C.RST}    {C.GREEN}║{C.RST}
+  {C.GREEN}║{C.RST}    {C.DIM}Reconnaissance & Vulnerability{C.RST}    {C.GREEN}║{C.RST}
+  {C.GREEN}╚═══════════════════════════════════════╝{C.RST}
+    """)
+
+
+def run_quick_scan(target: str, scanner: PortScanner) -> ScanResult:
+    """Run quick scan on common ports."""
+    print(f"  {C.CYAN}Quick scan:{C.RST} {target}")
+    print(f"  {C.DIM}Scanning {len(COMMON_PORTS)} common ports...{C.RST}")
+    
+    result = ScanResult(target=target, scan_type='quick', start_time=time.time())
+    ips = parse_target(target)
+    
+    for ip in ips:
+        host = scanner.scan_host(ip, COMMON_PORTS)
+        result.hosts.append(host)
+        print_host_result(host)
+    
+    result.end_time = time.time()
+    return result
+
+
+def run_full_scan(target: str, scanner: PortScanner) -> ScanResult:
+    """Run full port scan (1-65535)."""
+    print(f"  {C.CYAN}Full scan:{C.RST} {target}")
+    print(f"  {C.YELLOW}Warning:{C.RST} This may take a while...")
+    
+    result = ScanResult(target=target, scan_type='full', start_time=time.time())
+    ips = parse_target(target)
+    
+    all_ports = list(range(1, 65536))
+    
+    for ip in ips:
+        host = scanner.scan_host(ip, all_ports)
+        result.hosts.append(host)
+        print_host_result(host)
+    
+    result.end_time = time.time()
+    return result
+
+
+def run_discovery_scan(target: str, scanner: PortScanner) -> ScanResult:
+    """Run host discovery scan."""
+    print(f"  {C.CYAN}Discovery scan:{C.RST} {target}")
+    
+    result = ScanResult(target=target, scan_type='discovery', start_time=time.time())
+    ips = parse_target(target)
+    
+    print(f"  {C.DIM}Scanning {len(ips)} hosts...{C.RST}")
+    
+    for ip in ips:
+        host = HostResult(ip=ip)
+        host.is_up = scanner._ping(ip) or scanner._tcp_ping(ip)
+        if host.is_up:
+            host.hostname = reverse_dns(ip)
+            print(f"  {C.GREEN}✓{C.RST} {ip} ({host.hostname or 'unknown'})")
+        result.hosts.append(host)
+    
+    result.end_time = time.time()
+    return result
+
+
+def interactive_menu():
+    """Interactive scanning menu."""
+    scanner = PortScanner(timeout=1.0, threads=100)
+    
+    while True:
+        print_banner()
+        
+        print(f"  {C.CYAN}[1]{C.RST} Quick scan (common ports)")
+        print(f"  {C.CYAN}[2]{C.RST} Full port scan")
+        print(f"  {C.CYAN}[3]{C.RST} Host discovery")
+        print(f"  {C.CYAN}[4]{C.RST} Service detection")
+        print(f"  {C.CYAN}[5]{C.RST} Vulnerability check")
+        print(f"  {C.CYAN}[c]{C.RST} Configure scanner")
+        print(f"  {C.CYAN}[q]{C.RST} Quit")
+        
+        choice = input(f"\n  {C.GREEN}>{C.RST} ").strip().lower()
+        
+        if choice == '1':
+            target = input(f"  {C.GREEN}Target:{C.RST} ").strip()
+            if target:
+                result = run_quick_scan(target, scanner)
+                print_scan_summary(result)
+                
+                save = input(f"\n  {C.GREEN}Save results? [y/N]:{C.RST} ").strip().lower()
+                if save == 'y':
+                    filename = f"scan_{target.replace('/', '_')}_{int(time.time())}.json"
+                    save_results(result, RESULTS_DIR / filename)
+        
+        elif choice == '2':
+            target = input(f"  {C.GREEN}Target:{C.RST} ").strip()
+            if target:
+                result = run_full_scan(target, scanner)
+                print_scan_summary(result)
+        
+        elif choice == '3':
+            target = input(f"  {C.GREEN}Target (e.g., 192.168.1.0/24):{C.RST} ").strip()
+            if target:
+                result = run_discovery_scan(target, scanner)
+                print_scan_summary(result)
+        
+        elif choice == '4':
+            target = input(f"  {C.GREEN}Target:{C.RST} ").strip()
+            port = input(f"  {C.GREEN}Port:{C.RST} ").strip()
+            if target and port:
+                info = detect_service(target, int(port))
+                print(f"\n  {C.BLD}Service Detection:{C.RST}")
+                print(f"  {C.CYAN}Service:{C.RST} {info['service'] or 'unknown'}")
+                print(f"  {C.CYAN}Version:{C.RST} {info['version'] or 'unknown'}")
+                print(f"  {C.CYAN}Banner:{C.RST}\n    {info['banner'][:200]}")
+        
+        elif choice == '5':
+            target = input(f"  {C.GREEN}Target:{C.RST} ").strip()
+            if target:
+                print(f"\n  {C.CYAN}Scanning for vulnerabilities...{C.RST}")
+                result = run_quick_scan(target, scanner)
+                
+                for host in result.hosts:
+                    if host.is_up and host.ports:
+                        vulns = check_common_vulns(host.ip, host.ports)
+                        if vulns:
+                            print(f"\n  {C.BLD}Vulnerabilities for {host.ip}:{C.RST}")
+                            for v in vulns:
+                                sev_color = {'high': C.RED, 'medium': C.YELLOW, 'low': C.CYAN, 'info': C.DIM}
+                                print(f"  {sev_color.get(v['severity'], C.RST)}[{v['severity'].upper()}]{C.RST} {v['title']}")
+                                print(f"    {C.DIM}{v['description']}{C.RST}")
+        
+        elif choice == 'c':
+            print(f"\n  {C.BLD}Scanner Configuration:{C.RST}")
+            print(f"  {C.CYAN}Timeout:{C.RST} {scanner.timeout}s")
+            print(f"  {C.CYAN}Threads:{C.RST} {scanner.threads}")
+            
+            new_timeout = input(f"  {C.GREEN}New timeout (Enter to keep):{C.RST} ").strip()
+            if new_timeout:
+                scanner.timeout = float(new_timeout)
+            
+            new_threads = input(f"  {C.GREEN}New threads (Enter to keep):{C.RST} ").strip()
+            if new_threads:
+                scanner.threads = int(new_threads)
+        
+        elif choice == 'q':
+            break
+        
+        input(f"\n  {C.DIM}Press Enter to continue...{C.RST}")
+
+
+def main():
+    """Main entry point."""
+    parser = argparse.ArgumentParser(
+        description='NullSec Scan - Network and Vulnerability Scanner',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog='''
+Examples:
+  nullsec-scan 192.168.1.1
+  nullsec-scan 192.168.1.0/24 --discovery
+  nullsec-scan example.com --ports 80,443,8080
+  nullsec-scan 10.0.0.1 --full
+        '''
+    )
+    
+    parser.add_argument('target', nargs='?', help='Target to scan')
+    parser.add_argument('--ports', '-p', help='Ports to scan (comma-separated)')
+    parser.add_argument('--full', '-f', action='store_true', help='Full port scan')
+    parser.add_argument('--discovery', '-d', action='store_true', help='Host discovery only')
+    parser.add_argument('--timeout', '-t', type=float, default=1.0, help='Timeout in seconds')
+    parser.add_argument('--threads', '-T', type=int, default=100, help='Number of threads')
+    parser.add_argument('--output', '-o', help='Output file')
+    
+    args = parser.parse_args()
+    
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    
+    if args.target:
+        scanner = PortScanner(timeout=args.timeout, threads=args.threads)
+        
+        if args.discovery:
+            result = run_discovery_scan(args.target, scanner)
+        elif args.full:
+            result = run_full_scan(args.target, scanner)
+        elif args.ports:
+            ports = [int(p.strip()) for p in args.ports.split(',')]
+            result = ScanResult(target=args.target, scan_type='custom', start_time=time.time())
+            for ip in parse_target(args.target):
+                host = scanner.scan_host(ip, ports)
+                result.hosts.append(host)
+                print_host_result(host)
+            result.end_time = time.time()
+        else:
+            result = run_quick_scan(args.target, scanner)
+        
+        print_scan_summary(result)
+        
+        if args.output:
+            save_results(result, Path(args.output))
+        
+        return 0
+    
+    # Interactive mode
+    try:
+        interactive_menu()
+    except KeyboardInterrupt:
+        pass
+    
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

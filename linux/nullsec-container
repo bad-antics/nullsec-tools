@@ -1,0 +1,455 @@
+#!/bin/bash
+# ============================================================================
+# NullSec Container - Docker/Podman Security Manager
+# ============================================================================
+# Container scanning, hardening, and security management
+# Licensed under NullSec Public License v1.0
+# ============================================================================
+
+set -e
+
+VERSION="1.0.0"
+DATA_DIR="$HOME/.local/share/nullsec/containers"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+banner() {
+    echo -e "${BLUE}"
+    cat << 'EOF'
+    ╔═══════════════════════════════════════════════════════════════╗
+    ║            NULLSEC CONTAINER v1.0                             ║
+    ║            Container Security Manager                         ║
+    ╚═══════════════════════════════════════════════════════════════╝
+EOF
+    echo -e "${NC}"
+}
+
+log() { echo -e "${GREEN}[✓]${NC} $1"; }
+warn() { echo -e "${YELLOW}[!]${NC} $1"; }
+error() { echo -e "${RED}[✗]${NC} $1"; exit 1; }
+info() { echo -e "${BLUE}[i]${NC} $1"; }
+vuln() { echo -e "${RED}[VULN]${NC} $1"; }
+
+init() {
+    mkdir -p "$DATA_DIR"/{scans,policies,reports}
+}
+
+# Detect container runtime
+detect_runtime() {
+    if command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
+        echo "docker"
+    elif command -v podman &>/dev/null; then
+        echo "podman"
+    else
+        error "No container runtime found (docker/podman)"
+    fi
+}
+
+# List containers with security info
+list_containers() {
+    local runtime
+    runtime=$(detect_runtime)
+    
+    banner
+    info "Container Security Overview ($runtime)"
+    echo ""
+    
+    printf "%-15s %-30s %-10s %-10s %-15s\n" "ID" "NAME" "STATUS" "PRIVILEGED" "NETWORK"
+    echo "═══════════════════════════════════════════════════════════════════════════════"
+    
+    $runtime ps -a --format '{{.ID}}|{{.Names}}|{{.Status}}' 2>/dev/null | while IFS='|' read -r id name status; do
+        # Check if privileged
+        local privileged="No"
+        if $runtime inspect "$id" --format '{{.HostConfig.Privileged}}' 2>/dev/null | grep -q "true"; then
+            privileged="${RED}Yes${NC}"
+        fi
+        
+        # Get network mode
+        local network
+        network=$($runtime inspect "$id" --format '{{.HostConfig.NetworkMode}}' 2>/dev/null)
+        
+        # Status color
+        local status_display
+        if echo "$status" | grep -qi "up"; then
+            status_display="${GREEN}Running${NC}"
+        else
+            status_display="${YELLOW}Stopped${NC}"
+        fi
+        
+        printf "%-15s %-30s %-20b %-20b %-15s\n" "${id:0:12}" "${name:0:28}" "$status_display" "$privileged" "$network"
+    done
+}
+
+# Scan image for vulnerabilities
+scan_image() {
+    local image="$1"
+    local runtime
+    runtime=$(detect_runtime)
+    local report="$DATA_DIR/scans/scan_$(date +%Y%m%d_%H%M%S).txt"
+    
+    [[ -z "$image" ]] && error "Usage: scan-image <image>"
+    
+    banner
+    info "Scanning image: $image"
+    echo ""
+    
+    {
+        echo "═══════════════════════════════════════════════════════════════"
+        echo "NullSec Container - Image Security Scan"
+        echo "Image: $image"
+        echo "Runtime: $runtime"
+        echo "Generated: $(date)"
+        echo "═══════════════════════════════════════════════════════════════"
+        echo ""
+        
+        echo "=== Image Info ==="
+        $runtime inspect "$image" --format '
+ID: {{.Id}}
+Created: {{.Created}}
+Size: {{.Size}}
+Architecture: {{.Architecture}}
+OS: {{.Os}}
+' 2>/dev/null
+        
+        echo ""
+        echo "=== Image History ==="
+        $runtime history "$image" --no-trunc 2>/dev/null || true
+        
+        echo ""
+        echo "=== Security Analysis ==="
+        
+        local issues=0
+        
+        # Check for root user
+        local user
+        user=$($runtime inspect "$image" --format '{{.Config.User}}' 2>/dev/null)
+        if [[ -z "$user" ]] || [[ "$user" == "root" ]] || [[ "$user" == "0" ]]; then
+            echo "[WARN] Container runs as root user"
+            ((issues++))
+        else
+            echo "[OK] Container runs as non-root user: $user"
+        fi
+        
+        # Check exposed ports
+        local ports
+        ports=$($runtime inspect "$image" --format '{{range $p, $conf := .Config.ExposedPorts}}{{$p}} {{end}}' 2>/dev/null)
+        if [[ -n "$ports" ]]; then
+            echo "[INFO] Exposed ports: $ports"
+        fi
+        
+        # Check environment variables for secrets
+        $runtime inspect "$image" --format '{{range .Config.Env}}{{.}}{{"\n"}}{{end}}' 2>/dev/null | \
+        while read -r env; do
+            if echo "$env" | grep -qiE "(password|secret|key|token|api_key)="; then
+                echo "[VULN] Potential secret in environment: $(echo "$env" | cut -d= -f1)"
+                ((issues++))
+            fi
+        done
+        
+        # Check for healthcheck
+        local healthcheck
+        healthcheck=$($runtime inspect "$image" --format '{{.Config.Healthcheck}}' 2>/dev/null)
+        if [[ -z "$healthcheck" ]] || [[ "$healthcheck" == "<nil>" ]]; then
+            echo "[WARN] No healthcheck defined"
+        else
+            echo "[OK] Healthcheck defined"
+        fi
+        
+        echo ""
+        echo "Issues found: $issues"
+        
+    } | tee "$report"
+    
+    echo ""
+    log "Report saved: $report"
+}
+
+# Container security audit
+audit_container() {
+    local container="$1"
+    local runtime
+    runtime=$(detect_runtime)
+    
+    [[ -z "$container" ]] && error "Usage: audit <container>"
+    
+    banner
+    info "Auditing container: $container"
+    echo ""
+    
+    local issues=0
+    
+    echo "=== Security Configuration ==="
+    echo ""
+    
+    # Privileged mode
+    local privileged
+    privileged=$($runtime inspect "$container" --format '{{.HostConfig.Privileged}}' 2>/dev/null)
+    if [[ "$privileged" == "true" ]]; then
+        vuln "Running in PRIVILEGED mode - Full host access"
+        ((issues++))
+    else
+        log "Not running in privileged mode"
+    fi
+    
+    # Capabilities
+    echo ""
+    echo "Capabilities:"
+    local cap_add
+    cap_add=$($runtime inspect "$container" --format '{{.HostConfig.CapAdd}}' 2>/dev/null)
+    local cap_drop
+    cap_drop=$($runtime inspect "$container" --format '{{.HostConfig.CapDrop}}' 2>/dev/null)
+    
+    if [[ "$cap_add" != "[]" ]] && [[ -n "$cap_add" ]]; then
+        warn "Added capabilities: $cap_add"
+        
+        # Check for dangerous caps
+        if echo "$cap_add" | grep -qE "(SYS_ADMIN|NET_ADMIN|SYS_PTRACE|DAC_OVERRIDE)"; then
+            vuln "Dangerous capability detected"
+            ((issues++))
+        fi
+    fi
+    
+    if [[ "$cap_drop" != "[]" ]] && [[ -n "$cap_drop" ]]; then
+        log "Dropped capabilities: $cap_drop"
+    fi
+    
+    # PID namespace
+    echo ""
+    local pid_mode
+    pid_mode=$($runtime inspect "$container" --format '{{.HostConfig.PidMode}}' 2>/dev/null)
+    if [[ "$pid_mode" == "host" ]]; then
+        vuln "Using host PID namespace - Can see host processes"
+        ((issues++))
+    else
+        log "Using isolated PID namespace"
+    fi
+    
+    # Network mode
+    local net_mode
+    net_mode=$($runtime inspect "$container" --format '{{.HostConfig.NetworkMode}}' 2>/dev/null)
+    if [[ "$net_mode" == "host" ]]; then
+        warn "Using host network namespace"
+    else
+        log "Network mode: $net_mode"
+    fi
+    
+    # Mount points
+    echo ""
+    echo "Mount Points:"
+    $runtime inspect "$container" --format '{{range .Mounts}}{{.Source}} -> {{.Destination}} ({{.Mode}}){{"\n"}}{{end}}' 2>/dev/null | \
+    while read -r mount; do
+        [[ -z "$mount" ]] && continue
+        echo "  $mount"
+        
+        # Check for dangerous mounts
+        if echo "$mount" | grep -qE "^(/|/etc|/var|/root|/home)"; then
+            if echo "$mount" | grep -qv "ro"; then
+                warn "Sensitive path mounted read-write"
+                ((issues++))
+            fi
+        fi
+        
+        if echo "$mount" | grep -q "/var/run/docker.sock"; then
+            vuln "Docker socket mounted - Container escape possible"
+            ((issues++))
+        fi
+    done
+    
+    # Seccomp
+    echo ""
+    local seccomp
+    seccomp=$($runtime inspect "$container" --format '{{.HostConfig.SecurityOpt}}' 2>/dev/null)
+    if echo "$seccomp" | grep -q "seccomp=unconfined"; then
+        vuln "Seccomp disabled - All syscalls allowed"
+        ((issues++))
+    elif echo "$seccomp" | grep -q "seccomp"; then
+        log "Seccomp profile applied"
+    else
+        info "Using default seccomp profile"
+    fi
+    
+    # AppArmor
+    local apparmor
+    apparmor=$($runtime inspect "$container" --format '{{.AppArmorProfile}}' 2>/dev/null)
+    if [[ -n "$apparmor" ]] && [[ "$apparmor" != "unconfined" ]]; then
+        log "AppArmor profile: $apparmor"
+    else
+        warn "No AppArmor profile"
+    fi
+    
+    # Resource limits
+    echo ""
+    echo "Resource Limits:"
+    local mem_limit
+    mem_limit=$($runtime inspect "$container" --format '{{.HostConfig.Memory}}' 2>/dev/null)
+    local cpu_limit
+    cpu_limit=$($runtime inspect "$container" --format '{{.HostConfig.CpuQuota}}' 2>/dev/null)
+    
+    if [[ "$mem_limit" == "0" ]]; then
+        warn "No memory limit set"
+    else
+        log "Memory limit: $((mem_limit / 1024 / 1024))MB"
+    fi
+    
+    if [[ "$cpu_limit" == "0" ]]; then
+        warn "No CPU limit set"
+    else
+        log "CPU quota: $cpu_limit"
+    fi
+    
+    echo ""
+    echo "═══════════════════════════════════════════════════════════════"
+    if [[ $issues -eq 0 ]]; then
+        echo -e "${GREEN}AUDIT PASSED: No critical issues found${NC}"
+    else
+        echo -e "${RED}AUDIT FAILED: $issues security issues found${NC}"
+    fi
+    echo "═══════════════════════════════════════════════════════════════"
+}
+
+# Generate secure run command
+secure_run() {
+    local image="$1"
+    
+    [[ -z "$image" ]] && error "Usage: secure-run <image> [name]"
+    
+    local name="${2:-secure-$(head /dev/urandom | tr -dc 'a-z0-9' | head -c 8)}"
+    local runtime
+    runtime=$(detect_runtime)
+    
+    banner
+    info "Generating secure run command for: $image"
+    echo ""
+    
+    cat << EOF
+$runtime run -d \\
+  --name "$name" \\
+  --user 1000:1000 \\
+  --cap-drop ALL \\
+  --cap-add NET_BIND_SERVICE \\
+  --security-opt no-new-privileges:true \\
+  --security-opt seccomp=default \\
+  --read-only \\
+  --tmpfs /tmp:rw,noexec,nosuid,size=100m \\
+  --memory 512m \\
+  --memory-swap 512m \\
+  --cpu-quota 50000 \\
+  --pids-limit 100 \\
+  --restart unless-stopped \\
+  --health-cmd "exit 0" \\
+  --health-interval 30s \\
+  $image
+EOF
+    
+    echo ""
+    info "This command applies the following hardening:"
+    echo "  - Runs as non-root user (UID 1000)"
+    echo "  - Drops all capabilities except NET_BIND_SERVICE"
+    echo "  - Prevents privilege escalation"
+    echo "  - Uses seccomp profile"
+    echo "  - Read-only root filesystem"
+    echo "  - Memory limit: 512MB"
+    echo "  - CPU quota: 50%"
+    echo "  - PID limit: 100"
+}
+
+# Clean up unused resources
+cleanup() {
+    local runtime
+    runtime=$(detect_runtime)
+    
+    banner
+    info "Cleaning up unused container resources..."
+    echo ""
+    
+    # Remove stopped containers
+    local stopped
+    stopped=$($runtime ps -aq -f status=exited 2>/dev/null | wc -l)
+    if [[ $stopped -gt 0 ]]; then
+        $runtime container prune -f 2>/dev/null
+        log "Removed $stopped stopped containers"
+    fi
+    
+    # Remove dangling images
+    local dangling
+    dangling=$($runtime images -q -f dangling=true 2>/dev/null | wc -l)
+    if [[ $dangling -gt 0 ]]; then
+        $runtime image prune -f 2>/dev/null
+        log "Removed $dangling dangling images"
+    fi
+    
+    # Remove unused volumes
+    $runtime volume prune -f 2>/dev/null
+    log "Pruned unused volumes"
+    
+    # Remove unused networks
+    $runtime network prune -f 2>/dev/null
+    log "Pruned unused networks"
+    
+    echo ""
+    log "Cleanup complete"
+}
+
+# Help
+show_help() {
+    banner
+    cat << 'HELP'
+USAGE:
+    nullsec-container <command> [options]
+
+COMMANDS:
+    list                    List containers with security info
+    scan <image>           Scan image for vulnerabilities
+    audit <container>      Security audit a running container
+    secure-run <image>     Generate hardened run command
+    cleanup                Remove unused resources
+    help                   Show this help
+
+EXAMPLES:
+    nullsec-container list
+    nullsec-container scan nginx:latest
+    nullsec-container audit my_container
+    nullsec-container secure-run redis:alpine myredis
+
+NOTE:
+    Works with both Docker and Podman.
+
+LICENSE:
+    NullSec Public License v1.0
+
+HELP
+}
+
+# Main
+main() {
+    init
+    
+    case "${1:-help}" in
+        list|ls)
+            list_containers
+            ;;
+        scan)
+            scan_image "$2"
+            ;;
+        audit)
+            audit_container "$2"
+            ;;
+        secure-run|run)
+            secure_run "$2" "$3"
+            ;;
+        cleanup|clean|prune)
+            cleanup
+            ;;
+        *)
+            show_help
+            ;;
+    esac
+}
+
+main "$@"

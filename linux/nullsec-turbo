@@ -1,0 +1,36 @@
+#!/bin/bash
+#
+# NullSec Turbo Launcher
+# framework powered by Bun
+# bad-antics development
+#
+
+PORT=${1:-3000}
+TURBO_DIR="$HOME/nullsec-turbo"
+
+echo ""
+echo "  NULLSEC TURBO - FRAMEWORK"
+echo "  Powered by Bun + Hono"
+echo "  bad-antics development"
+echo ""
+
+# Check bun
+if ! command -v bun &> /dev/null; then
+    echo "  [!] Bun not found. Installing..."
+    curl -fsSL https://bun.sh/install | bash
+    source ~/.bashrc
+fi
+
+# Stop existing
+pkill -f "bun.*nullsec-turbo" 2>/dev/null
+
+cd "$TURBO_DIR"
+
+echo "  [+] Starting on port $PORT"
+echo "  [*] URL: http://localhost:$PORT"
+echo ""
+
+# Open browser
+(sleep 1 && xdg-open "http://localhost:$PORT" 2>/dev/null) &
+
+PORT=$PORT bun run index.ts

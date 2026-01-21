@@ -1,0 +1,5 @@
+#!/bin/bash
+# NullSec Code Watcher - Background service
+
+cd /home/antics/nullsec-code
+python3 watcher.py

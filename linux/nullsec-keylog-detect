@@ -1,0 +1,482 @@
+#!/bin/bash
+# ============================================================================
+# NullSec Keylogger Detector - Anti-Keylogger Protection
+# ============================================================================
+# Detects keyloggers, suspicious input devices, and keyboard sniffers
+# Licensed under NullSec Public License v1.0
+# ============================================================================
+
+set -e
+
+VERSION="1.0.0"
+LOG_DIR="$HOME/.local/share/nullsec/keylog-detect"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+banner() {
+    echo -e "${RED}"
+    cat << 'EOF'
+    ╔═══════════════════════════════════════════════════════════════╗
+    ║          NULLSEC KEYLOGGER DETECTOR v1.0                      ║
+    ║          Anti-Keylogger Protection                            ║
+    ╚═══════════════════════════════════════════════════════════════╝
+EOF
+    echo -e "${NC}"
+}
+
+log() { echo -e "${GREEN}[✓]${NC} $1"; }
+warn() { echo -e "${YELLOW}[⚠]${NC} $1"; }
+error() { echo -e "${RED}[✗]${NC} $1"; }
+info() { echo -e "${BLUE}[i]${NC} $1"; }
+threat() { echo -e "${RED}[THREAT]${NC} $1"; }
+
+init() {
+    mkdir -p "$LOG_DIR"
+}
+
+# Check for suspicious processes accessing input devices
+check_input_processes() {
+    info "Checking processes accessing input devices..."
+    
+    local threats=0
+    
+    # Check /dev/input access
+    for input in /dev/input/event*; do
+        [[ ! -e "$input" ]] && continue
+        
+        local pids
+        pids=$(fuser "$input" 2>/dev/null | tr ' ' '\n' | sort -u)
+        
+        for pid in $pids; do
+            [[ -z "$pid" ]] && continue
+            
+            local proc_name
+            proc_name=$(ps -p "$pid" -o comm= 2>/dev/null)
+            local proc_exe
+            proc_exe=$(readlink /proc/"$pid"/exe 2>/dev/null)
+            
+            # Known safe processes
+            local safe_procs="Xorg X xinit gdm lightdm sddm kwin_x11 kwin_wayland gnome-shell"
+            
+            if ! echo "$safe_procs" | grep -qw "$proc_name"; then
+                threat "Process '$proc_name' (PID: $pid) accessing $input"
+                info "  Executable: $proc_exe"
+                ((threats++))
+            fi
+        done
+    done
+    
+    [[ $threats -eq 0 ]] && log "No suspicious input device access detected"
+    return $threats
+}
+
+# Check for keyboard hooks
+check_keyboard_hooks() {
+    info "Checking for keyboard hooks..."
+    
+    local threats=0
+    
+    # Check xinput list
+    if command -v xinput &>/dev/null; then
+        local keyboards
+        keyboards=$(xinput list --short 2>/dev/null | grep -i "keyboard" || true)
+        
+        # Check for virtual keyboards that could be sniffers
+        while read -r line; do
+            if echo "$line" | grep -qi "virtual\|fake\|hook\|spy"; then
+                threat "Suspicious keyboard device: $line"
+                ((threats++))
+            fi
+        done <<< "$keyboards"
+    fi
+    
+    # Check for evdev hooks
+    if [[ -d /sys/class/input ]]; then
+        for device in /sys/class/input/input*; do
+            local name
+            name=$(cat "$device/name" 2>/dev/null)
+            if echo "$name" | grep -qi "logger\|sniff\|capture\|spy"; then
+                threat "Suspicious input device: $name"
+                ((threats++))
+            fi
+        done
+    fi
+    
+    [[ $threats -eq 0 ]] && log "No keyboard hooks detected"
+    return $threats
+}
+
+# Check for known keylogger processes
+check_keylogger_processes() {
+    info "Checking for known keylogger processes..."
+    
+    local threats=0
+    
+    # Known Linux keylogger names/patterns
+    local keyloggers=(
+        "logkeys"
+        "lkl"
+        "pykeylogger"
+        "keylogger"
+        "klogger"
+        "keycapture"
+        "inputlog"
+        "keysniffer"
+        "xspy"
+        "xinput.*test"
+        "showkey"
+        "evtest"
+    )
+    
+    for kl in "${keyloggers[@]}"; do
+        local matches
+        matches=$(pgrep -f "$kl" 2>/dev/null || true)
+        
+        if [[ -n "$matches" ]]; then
+            for pid in $matches; do
+                local cmdline
+                cmdline=$(cat /proc/"$pid"/cmdline 2>/dev/null | tr '\0' ' ')
+                threat "Potential keylogger process: $kl (PID: $pid)"
+                info "  Command: $cmdline"
+                ((threats++))
+            done
+        fi
+    done
+    
+    [[ $threats -eq 0 ]] && log "No known keylogger processes found"
+    return $threats
+}
+
+# Check for suspicious kernel modules
+check_kernel_modules() {
+    info "Checking kernel modules..."
+    
+    local threats=0
+    
+    # Suspicious module patterns
+    local suspicious=(
+        "keylog"
+        "klog"
+        "kbd"
+        "input_hook"
+        "keyboard_hook"
+    )
+    
+    local modules
+    modules=$(lsmod 2>/dev/null)
+    
+    for pattern in "${suspicious[@]}"; do
+        if echo "$modules" | grep -qi "$pattern"; then
+            local match
+            match=$(echo "$modules" | grep -i "$pattern")
+            threat "Suspicious kernel module: $match"
+            ((threats++))
+        fi
+    done
+    
+    [[ $threats -eq 0 ]] && log "No suspicious kernel modules found"
+    return $threats
+}
+
+# Check for X11 keyboard sniffers
+check_x11_sniffers() {
+    info "Checking for X11 keyboard sniffers..."
+    
+    local threats=0
+    
+    # Check XKEYBOARD extension clients
+    if command -v xlsclients &>/dev/null && [[ -n "$DISPLAY" ]]; then
+        local clients
+        clients=$(xlsclients -l 2>/dev/null || true)
+        
+        # Look for suspicious window names
+        if echo "$clients" | grep -qi "keylog\|sniff\|spy\|capture"; then
+            threat "Suspicious X11 client detected"
+            echo "$clients" | grep -i "keylog\|sniff\|spy\|capture"
+            ((threats++))
+        fi
+    fi
+    
+    # Check for XRecord extension abuse
+    if [[ -n "$DISPLAY" ]]; then
+        local xrecord_users
+        xrecord_users=$(lsof 2>/dev/null | grep -E "\.X[0-9]+-lock" | awk '{print $1}' | sort -u || true)
+        
+        for proc in $xrecord_users; do
+            if echo "$proc" | grep -qi "log\|sniff\|spy\|capture"; then
+                threat "Process using X11 connection suspiciously: $proc"
+                ((threats++))
+            fi
+        done
+    fi
+    
+    [[ $threats -eq 0 ]] && log "No X11 keyboard sniffers detected"
+    return $threats
+}
+
+# Check for suspicious files in common locations
+check_suspicious_files() {
+    info "Checking for suspicious files..."
+    
+    local threats=0
+    
+    # Common keylogger output locations
+    local locations=(
+        "/tmp"
+        "/var/tmp"
+        "$HOME"
+        "$HOME/.local"
+        "$HOME/.cache"
+        "/var/log"
+    )
+    
+    # Suspicious file patterns
+    local patterns=(
+        "*keylog*"
+        "*key.log*"
+        "*keyboard*log*"
+        "*keystroke*"
+        "*.keys"
+    )
+    
+    for loc in "${locations[@]}"; do
+        [[ ! -d "$loc" ]] && continue
+        
+        for pattern in "${patterns[@]}"; do
+            local files
+            files=$(find "$loc" -maxdepth 2 -name "$pattern" -type f 2>/dev/null || true)
+            
+            if [[ -n "$files" ]]; then
+                while read -r file; do
+                    threat "Suspicious file found: $file"
+                    info "  Size: $(stat -c%s "$file" 2>/dev/null || echo "unknown") bytes"
+                    info "  Modified: $(stat -c%y "$file" 2>/dev/null || echo "unknown")"
+                    ((threats++))
+                done <<< "$files"
+            fi
+        done
+    done
+    
+    [[ $threats -eq 0 ]] && log "No suspicious keylogger files found"
+    return $threats
+}
+
+# Check startup entries
+check_startup() {
+    info "Checking startup entries..."
+    
+    local threats=0
+    
+    # User autostart
+    local autostart_dirs=(
+        "$HOME/.config/autostart"
+        "/etc/xdg/autostart"
+        "$HOME/.local/share/applications"
+    )
+    
+    for dir in "${autostart_dirs[@]}"; do
+        [[ ! -d "$dir" ]] && continue
+        
+        for file in "$dir"/*.desktop; do
+            [[ ! -f "$file" ]] && continue
+            
+            if grep -qi "keylog\|sniff\|capture\|spy" "$file" 2>/dev/null; then
+                threat "Suspicious autostart entry: $file"
+                ((threats++))
+            fi
+        done
+    done
+    
+    # Systemd user services
+    local user_services="$HOME/.config/systemd/user"
+    if [[ -d "$user_services" ]]; then
+        for service in "$user_services"/*.service; do
+            [[ ! -f "$service" ]] && continue
+            
+            if grep -qi "keylog\|sniff\|capture\|input.*event" "$service" 2>/dev/null; then
+                threat "Suspicious user service: $service"
+                ((threats++))
+            fi
+        done
+    fi
+    
+    [[ $threats -eq 0 ]] && log "No suspicious startup entries found"
+    return $threats
+}
+
+# Real-time monitoring
+monitor() {
+    banner
+    info "Starting real-time keylogger monitoring..."
+    info "Press Ctrl+C to stop"
+    echo ""
+    
+    while true; do
+        # Check for new processes accessing input
+        for input in /dev/input/event*; do
+            [[ ! -e "$input" ]] && continue
+            
+            local pids
+            pids=$(fuser "$input" 2>/dev/null | tr ' ' '\n' | sort -u)
+            
+            for pid in $pids; do
+                [[ -z "$pid" ]] && continue
+                
+                local proc_name
+                proc_name=$(ps -p "$pid" -o comm= 2>/dev/null)
+                
+                # Alert on non-system processes
+                local safe_procs="Xorg X xinit gdm lightdm sddm kwin gnome-shell"
+                
+                if ! echo "$safe_procs" | grep -qw "$proc_name"; then
+                    echo "[$(date '+%H:%M:%S')] Alert: '$proc_name' (PID: $pid) accessing $input"
+                fi
+            done
+        done
+        
+        sleep 2
+    done
+}
+
+# Full scan
+full_scan() {
+    banner
+    
+    local total_threats=0
+    local report="$LOG_DIR/scan_$(date +%Y%m%d_%H%M%S).txt"
+    
+    {
+        echo "NullSec Keylogger Detector - Full Scan Report"
+        echo "Generated: $(date)"
+        echo "Hostname: $(hostname)"
+        echo "════════════════════════════════════════════════════════════════"
+        echo ""
+        
+    } > "$report"
+    
+    echo ""
+    local t
+    
+    check_keylogger_processes
+    t=$?; ((total_threats += t))
+    echo ""
+    
+    check_input_processes
+    t=$?; ((total_threats += t))
+    echo ""
+    
+    check_keyboard_hooks
+    t=$?; ((total_threats += t))
+    echo ""
+    
+    check_kernel_modules
+    t=$?; ((total_threats += t))
+    echo ""
+    
+    check_x11_sniffers
+    t=$?; ((total_threats += t))
+    echo ""
+    
+    check_suspicious_files
+    t=$?; ((total_threats += t))
+    echo ""
+    
+    check_startup
+    t=$?; ((total_threats += t))
+    echo ""
+    
+    echo "════════════════════════════════════════════════════════════════"
+    if [[ $total_threats -eq 0 ]]; then
+        echo -e "${GREEN}SCAN COMPLETE: No threats detected${NC}"
+    else
+        echo -e "${RED}SCAN COMPLETE: $total_threats potential threats detected${NC}"
+    fi
+    echo "════════════════════════════════════════════════════════════════"
+    
+    log "Report saved: $report"
+}
+
+# Help
+show_help() {
+    banner
+    cat << 'HELP'
+USAGE:
+    nullsec-keylog-detect <command>
+
+COMMANDS:
+    scan                Full keylogger detection scan
+    quick               Quick process check only
+    monitor             Real-time monitoring mode
+    processes           Check for keylogger processes
+    hooks               Check for keyboard hooks
+    modules             Check kernel modules
+    files               Check for suspicious files
+    startup             Check startup entries
+    help                Show this help
+
+EXAMPLES:
+    nullsec-keylog-detect scan
+    sudo nullsec-keylog-detect monitor
+    nullsec-keylog-detect quick
+
+NOTE:
+    Some checks require root privileges for full access.
+
+LICENSE:
+    NullSec Public License v1.0
+
+HELP
+}
+
+# Main
+main() {
+    init
+    
+    case "${1:-help}" in
+        scan|full)
+            full_scan
+            ;;
+        quick)
+            banner
+            check_keylogger_processes
+            ;;
+        monitor)
+            monitor
+            ;;
+        processes)
+            banner
+            check_keylogger_processes
+            ;;
+        hooks)
+            banner
+            check_keyboard_hooks
+            ;;
+        modules)
+            banner
+            check_kernel_modules
+            ;;
+        files)
+            banner
+            check_suspicious_files
+            ;;
+        startup)
+            banner
+            check_startup
+            ;;
+        x11)
+            banner
+            check_x11_sniffers
+            ;;
+        *)
+            show_help
+            ;;
+    esac
+}
+
+main "$@"

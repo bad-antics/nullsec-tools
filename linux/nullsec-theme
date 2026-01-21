@@ -1,0 +1,688 @@
+#!/usr/bin/env python3
+"""
+NullSec Theme Engine - Desktop Theme Manager
+=============================================
+Complete desktop theming system for NullSec Linux.
+
+Manages:
+- GTK themes
+- Icon themes
+- Cursor themes
+- Window decorations
+- Terminal colors
+- Panel styling
+
+(c) bad-antics development
+"""
+
+import os
+import sys
+import json
+import subprocess
+import shutil
+from pathlib import Path
+from typing import Dict, Optional
+
+# ============================================================================
+# Colors
+# ============================================================================
+
+class C:
+    RST = '\033[0m'
+    BLD = '\033[1m'
+    DIM = '\033[2m'
+    RED = '\033[0;31m'
+    GRN = '\033[0;32m'
+    YLW = '\033[0;33m'
+    CYN = '\033[0;36m'
+    MAG = '\033[0;35m'
+
+# ============================================================================
+# Configuration
+# ============================================================================
+
+THEMES_DIR = Path.home() / '.themes'
+ICONS_DIR = Path.home() / '.local' / 'share' / 'icons'
+CONFIG_DIR = Path.home() / '.config' / 'nullsec'
+
+THEME_PRESETS = {
+    'cyber': {
+        'name': 'NullSec Cyber',
+        'description': 'Classic green-on-black hacker aesthetic',
+        'colors': {
+            'bg': '#0d1117',
+            'bg_alt': '#161b22',
+            'fg': '#c9d1d9',
+            'accent': '#00ff41',
+            'accent2': '#00ffff',
+            'error': '#ff5555',
+            'warning': '#ffff55',
+            'success': '#00ff41',
+        },
+        'gtk_base': 'Adwaita-dark',
+        'icon_style': 'neon',
+    },
+    'stealth': {
+        'name': 'NullSec Stealth',
+        'description': 'Minimal dark theme for focused work',
+        'colors': {
+            'bg': '#1a1a1a',
+            'bg_alt': '#252525',
+            'fg': '#e0e0e0',
+            'accent': '#808080',
+            'accent2': '#606060',
+            'error': '#cc5555',
+            'warning': '#cccc55',
+            'success': '#55cc55',
+        },
+        'gtk_base': 'Adwaita-dark',
+        'icon_style': 'minimal',
+    },
+    'neon': {
+        'name': 'NullSec Neon',
+        'description': 'Vibrant cyberpunk color scheme',
+        'colors': {
+            'bg': '#0a0a0a',
+            'bg_alt': '#1a1a2e',
+            'fg': '#ffffff',
+            'accent': '#ff00ff',
+            'accent2': '#00ffff',
+            'error': '#ff0055',
+            'warning': '#ffff00',
+            'success': '#00ff88',
+        },
+        'gtk_base': 'Adwaita-dark',
+        'icon_style': 'neon',
+    },
+    'void': {
+        'name': 'NullSec Void',
+        'description': 'Deep space dark theme',
+        'colors': {
+            'bg': '#000000',
+            'bg_alt': '#0d0d1a',
+            'fg': '#a0a0b0',
+            'accent': '#e94560',
+            'accent2': '#533483',
+            'error': '#e94560',
+            'warning': '#f1c40f',
+            'success': '#2ecc71',
+        },
+        'gtk_base': 'Adwaita-dark',
+        'icon_style': 'flat',
+    },
+    'blood': {
+        'name': 'NullSec Blood',
+        'description': 'Dark red aggressive theme',
+        'colors': {
+            'bg': '#0d0d0d',
+            'bg_alt': '#1a0a0a',
+            'fg': '#d0d0d0',
+            'accent': '#8b0000',
+            'accent2': '#ff0000',
+            'error': '#ff0000',
+            'warning': '#ff8800',
+            'success': '#008800',
+        },
+        'gtk_base': 'Adwaita-dark',
+        'icon_style': 'bold',
+    },
+    'arctic': {
+        'name': 'NullSec Arctic',
+        'description': 'Cool blue ice theme',
+        'colors': {
+            'bg': '#0a1628',
+            'bg_alt': '#132743',
+            'fg': '#e8f4f8',
+            'accent': '#4fc3f7',
+            'accent2': '#81d4fa',
+            'error': '#ef5350',
+            'warning': '#ffca28',
+            'success': '#66bb6a',
+        },
+        'gtk_base': 'Adwaita-dark',
+        'icon_style': 'frost',
+    },
+    'toxic': {
+        'name': 'NullSec Toxic',
+        'description': 'Radioactive green glow',
+        'colors': {
+            'bg': '#0d1f0d',
+            'bg_alt': '#1a2f1a',
+            'fg': '#d0ffd0',
+            'accent': '#39ff14',
+            'accent2': '#adff2f',
+            'error': '#ff4444',
+            'warning': '#ffff00',
+            'success': '#00ff00',
+        },
+        'gtk_base': 'Adwaita-dark',
+        'icon_style': 'glow',
+    },
+    'phantom': {
+        'name': 'NullSec Phantom',
+        'description': 'Ghostly purple haze',
+        'colors': {
+            'bg': '#0f0a1a',
+            'bg_alt': '#1a1025',
+            'fg': '#e0d0f0',
+            'accent': '#9b59b6',
+            'accent2': '#8e44ad',
+            'error': '#e74c3c',
+            'warning': '#f39c12',
+            'success': '#27ae60',
+        },
+        'gtk_base': 'Adwaita-dark',
+        'icon_style': 'ghost',
+    },
+}
+
+# ============================================================================
+# GTK Theme Generation
+# ============================================================================
+
+def generate_gtk3_css(colors: Dict) -> str:
+    """Generate GTK3 CSS stylesheet."""
+    return f'''
+/* NullSec GTK3 Theme */
+/* Generated by nullsec-theme */
+
+@define-color theme_bg_color {colors["bg"]};
+@define-color theme_fg_color {colors["fg"]};
+@define-color theme_base_color {colors["bg_alt"]};
+@define-color theme_selected_bg_color {colors["accent"]};
+@define-color theme_selected_fg_color {colors["bg"]};
+@define-color error_color {colors["error"]};
+@define-color warning_color {colors["warning"]};
+@define-color success_color {colors["success"]};
+
+* {{
+    -gtk-icon-style: symbolic;
+}}
+
+/* Window */
+window {{
+    background-color: @theme_bg_color;
+    color: @theme_fg_color;
+}}
+
+/* Headerbar */
+headerbar {{
+    background: linear-gradient(to bottom, {colors["bg_alt"]}, {colors["bg"]});
+    border-bottom: 1px solid {colors["accent"]}40;
+    color: @theme_fg_color;
+}}
+
+headerbar:backdrop {{
+    background: {colors["bg"]};
+}}
+
+/* Buttons */
+button {{
+    background: linear-gradient(to bottom, {colors["bg_alt"]}, {colors["bg"]});
+    border: 1px solid {colors["accent"]}60;
+    border-radius: 4px;
+    color: @theme_fg_color;
+    padding: 6px 12px;
+}}
+
+button:hover {{
+    background: {colors["accent"]}30;
+    border-color: {colors["accent"]};
+}}
+
+button:active {{
+    background: {colors["accent"]}50;
+}}
+
+/* Entry */
+entry {{
+    background: {colors["bg"]};
+    border: 1px solid {colors["accent"]}40;
+    border-radius: 4px;
+    color: @theme_fg_color;
+    padding: 6px;
+}}
+
+entry:focus {{
+    border-color: {colors["accent"]};
+    box-shadow: 0 0 3px {colors["accent"]}80;
+}}
+
+/* Selection */
+*:selected {{
+    background-color: {colors["accent"]};
+    color: {colors["bg"]};
+}}
+
+/* Scrollbar */
+scrollbar {{
+    background: {colors["bg"]};
+}}
+
+scrollbar slider {{
+    background: {colors["accent"]}60;
+    border-radius: 10px;
+    min-width: 8px;
+    min-height: 8px;
+}}
+
+scrollbar slider:hover {{
+    background: {colors["accent"]};
+}}
+
+/* Menu */
+menu {{
+    background: {colors["bg_alt"]};
+    border: 1px solid {colors["accent"]}40;
+}}
+
+menuitem:hover {{
+    background: {colors["accent"]}40;
+}}
+
+/* Tooltip */
+tooltip {{
+    background: {colors["bg"]};
+    border: 1px solid {colors["accent"]};
+    color: @theme_fg_color;
+}}
+
+/* Notebook (tabs) */
+notebook > header > tabs > tab {{
+    background: {colors["bg"]};
+    border: 1px solid transparent;
+    padding: 6px 12px;
+}}
+
+notebook > header > tabs > tab:checked {{
+    background: {colors["bg_alt"]};
+    border-bottom: 2px solid {colors["accent"]};
+}}
+
+/* Treeview */
+treeview {{
+    background: {colors["bg"]};
+}}
+
+treeview:selected {{
+    background: {colors["accent"]};
+    color: {colors["bg"]};
+}}
+
+/* Progress bar */
+progressbar trough {{
+    background: {colors["bg_alt"]};
+    border-radius: 4px;
+}}
+
+progressbar progress {{
+    background: linear-gradient(to right, {colors["accent"]}, {colors["accent2"]});
+    border-radius: 4px;
+}}
+
+/* Switch */
+switch {{
+    background: {colors["bg_alt"]};
+    border-radius: 12px;
+}}
+
+switch:checked {{
+    background: {colors["accent"]};
+}}
+
+/* Sidebar */
+.sidebar {{
+    background: {colors["bg"]};
+    border-right: 1px solid {colors["accent"]}20;
+}}
+
+.sidebar row:selected {{
+    background: {colors["accent"]}30;
+}}
+'''
+
+
+def generate_gtk2_rc(colors: Dict) -> str:
+    """Generate GTK2 RC file."""
+    return f'''
+# NullSec GTK2 Theme
+# Generated by nullsec-theme
+
+gtk-color-scheme = "bg_color:{colors["bg"]}\\nfg_color:{colors["fg"]}\\nbase_color:{colors["bg_alt"]}\\ntext_color:{colors["fg"]}\\nselected_bg_color:{colors["accent"]}\\nselected_fg_color:{colors["bg"]}"
+
+style "default" {{
+    bg[NORMAL] = @bg_color
+    bg[PRELIGHT] = shade(1.1, @bg_color)
+    bg[ACTIVE] = shade(0.9, @bg_color)
+    bg[SELECTED] = @selected_bg_color
+    bg[INSENSITIVE] = @bg_color
+
+    fg[NORMAL] = @fg_color
+    fg[PRELIGHT] = @fg_color
+    fg[ACTIVE] = @fg_color
+    fg[SELECTED] = @selected_fg_color
+    fg[INSENSITIVE] = shade(0.5, @fg_color)
+
+    base[NORMAL] = @base_color
+    base[PRELIGHT] = shade(1.05, @base_color)
+    base[ACTIVE] = shade(0.9, @base_color)
+    base[SELECTED] = @selected_bg_color
+    base[INSENSITIVE] = @base_color
+
+    text[NORMAL] = @text_color
+    text[PRELIGHT] = @text_color
+    text[ACTIVE] = @text_color
+    text[SELECTED] = @selected_fg_color
+    text[INSENSITIVE] = shade(0.5, @text_color)
+
+    engine "murrine" {{
+        animation = TRUE
+        colorize_scrollbar = TRUE
+        contrast = 0.8
+        glazestyle = 0
+        glow_shade = 1.0
+        glowstyle = 0
+        gradient_shades = {{1.0, 1.0, 1.0, 1.0}}
+        highlight_shade = 1.0
+        lightborder_shade = 1.0
+        lightborderstyle = 0
+        listviewheaderstyle = 0
+        listviewstyle = 0
+        menubaritemstyle = 0
+        menubarstyle = 0
+        menuitemstyle = 0
+        menustyle = 0
+        progressbarstyle = 0
+        reliefstyle = 0
+        rgba = TRUE
+        roundness = 4
+        scrollbarstyle = 0
+        separatorstyle = 0
+        sliderstyle = 0
+        stepperstyle = 1
+        toolbarstyle = 0
+    }}
+}}
+
+class "GtkWidget" style "default"
+'''
+
+
+def generate_terminal_colors(colors: Dict) -> Dict:
+    """Generate terminal color scheme."""
+    return {
+        'background': colors['bg'],
+        'foreground': colors['fg'],
+        'cursor': colors['accent'],
+        'color0': colors['bg'],           # Black
+        'color1': colors['error'],         # Red
+        'color2': colors['success'],       # Green
+        'color3': colors['warning'],       # Yellow
+        'color4': colors['accent2'],       # Blue
+        'color5': '#ff79c6',              # Magenta
+        'color6': colors['accent'],        # Cyan
+        'color7': colors['fg'],           # White
+        'color8': colors['bg_alt'],       # Bright Black
+        'color9': colors['error'],         # Bright Red
+        'color10': colors['success'],      # Bright Green
+        'color11': colors['warning'],      # Bright Yellow
+        'color12': colors['accent2'],      # Bright Blue
+        'color13': '#ff79c6',             # Bright Magenta
+        'color14': colors['accent'],       # Bright Cyan
+        'color15': '#ffffff',             # Bright White
+    }
+
+
+# ============================================================================
+# Theme Installation
+# ============================================================================
+
+def install_theme(preset_name: str, verbose: bool = False) -> bool:
+    """Install a theme preset."""
+    if preset_name not in THEME_PRESETS:
+        print(f"  {C.RED}[!] Unknown theme: {preset_name}{C.RST}")
+        return False
+    
+    preset = THEME_PRESETS[preset_name]
+    theme_name = f"NullSec-{preset_name.capitalize()}"
+    theme_dir = THEMES_DIR / theme_name
+    
+    if verbose:
+        print(f"  {C.DIM}Installing: {preset['name']}{C.RST}")
+    
+    try:
+        # Create theme directory structure
+        (theme_dir / 'gtk-3.0').mkdir(parents=True, exist_ok=True)
+        (theme_dir / 'gtk-2.0').mkdir(parents=True, exist_ok=True)
+        
+        # Write GTK3 CSS
+        with open(theme_dir / 'gtk-3.0' / 'gtk.css', 'w') as f:
+            f.write(generate_gtk3_css(preset['colors']))
+        
+        # Write GTK2 RC
+        with open(theme_dir / 'gtk-2.0' / 'gtkrc', 'w') as f:
+            f.write(generate_gtk2_rc(preset['colors']))
+        
+        # Write theme index
+        with open(theme_dir / 'index.theme', 'w') as f:
+            f.write(f'''[Desktop Entry]
+Type=X-GNOME-Metatheme
+Name={preset["name"]}
+Comment={preset["description"]}
+Encoding=UTF-8
+
+[X-GNOME-Metatheme]
+GtkTheme={theme_name}
+MetacityTheme={theme_name}
+IconTheme=NullSec-{preset["icon_style"].capitalize()}
+CursorTheme=Adwaita
+''')
+        
+        return True
+        
+    except Exception as e:
+        print(f"  {C.RED}[!] Error installing theme: {e}{C.RST}")
+        return False
+
+
+def apply_theme(preset_name: str) -> bool:
+    """Apply a theme to the current session."""
+    if preset_name not in THEME_PRESETS:
+        return False
+    
+    theme_name = f"NullSec-{preset_name.capitalize()}"
+    preset = THEME_PRESETS[preset_name]
+    
+    try:
+        # Apply GTK theme
+        subprocess.run([
+            'gsettings', 'set', 'org.mate.interface', 'gtk-theme', theme_name
+        ], capture_output=True)
+        
+        subprocess.run([
+            'gsettings', 'set', 'org.gnome.desktop.interface', 'gtk-theme', theme_name
+        ], capture_output=True)
+        
+        # Apply window decoration
+        subprocess.run([
+            'gsettings', 'set', 'org.mate.Marco.general', 'theme', theme_name
+        ], capture_output=True)
+        
+        # Save current theme to config
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        with open(CONFIG_DIR / 'current-theme', 'w') as f:
+            f.write(preset_name)
+        
+        return True
+        
+    except Exception as e:
+        return False
+
+
+def get_current_theme() -> Optional[str]:
+    """Get the currently applied theme."""
+    try:
+        if (CONFIG_DIR / 'current-theme').exists():
+            return (CONFIG_DIR / 'current-theme').read_text().strip()
+    except Exception:
+        pass
+    return None
+
+
+# ============================================================================
+# CLI Interface
+# ============================================================================
+
+def print_banner():
+    """Print application banner."""
+    print(f"""
+{C.CYN}  ╔═══════════════════════════════════════════════════════════╗
+  ║                  NULLSEC THEME                            ║
+  ║               Desktop Theme Engine                        ║
+  ╚═══════════════════════════════════════════════════════════╝{C.RST}
+""")
+
+
+def show_theme_preview(preset_name: str):
+    """Show a preview of theme colors."""
+    if preset_name not in THEME_PRESETS:
+        return
+    
+    colors = THEME_PRESETS[preset_name]['colors']
+    
+    print(f"\n  {C.BLD}{THEME_PRESETS[preset_name]['name']}{C.RST}")
+    print(f"  {C.DIM}{THEME_PRESETS[preset_name]['description']}{C.RST}\n")
+    
+    # Color swatches using Unicode blocks
+    for name, color in colors.items():
+        # Convert hex to ANSI 24-bit color
+        hex_val = color.lstrip('#')
+        r, g, b = int(hex_val[0:2], 16), int(hex_val[2:4], 16), int(hex_val[4:6], 16)
+        ansi_color = f'\033[48;2;{r};{g};{b}m'
+        print(f"  {ansi_color}     {C.RST} {name:12} {color}")
+    print()
+
+
+def interactive_menu():
+    """Interactive theme selection."""
+    while True:
+        current = get_current_theme()
+        
+        print(f"\n  {C.BLD}Available Themes:{C.RST}")
+        print(f"  {C.DIM}{'─' * 50}{C.RST}")
+        
+        for i, (name, preset) in enumerate(THEME_PRESETS.items(), 1):
+            active = f'{C.GRN}[ACTIVE]{C.RST}' if name == current else ''
+            installed = '✓' if (THEMES_DIR / f"NullSec-{name.capitalize()}").exists() else '○'
+            print(f"  [{i}] {installed} {preset['name']:20} {active}")
+        
+        print(f"\n  {C.CYN}[A]{C.RST} Install all themes")
+        print(f"  {C.CYN}[P]{C.RST} Preview a theme")
+        print(f"  {C.CYN}[Q]{C.RST} Quit")
+        
+        choice = input(f"\n  {C.GRN}Select theme or option:{C.RST} ").strip().lower()
+        
+        if choice == 'q':
+            break
+        elif choice == 'a':
+            print(f"\n  {C.DIM}Installing all themes...{C.RST}")
+            for name in THEME_PRESETS:
+                install_theme(name, verbose=True)
+            print(f"  {C.GRN}[+] All themes installed{C.RST}")
+        elif choice == 'p':
+            num = input(f"  {C.CYN}Theme number to preview:{C.RST} ").strip()
+            if num.isdigit():
+                idx = int(num) - 1
+                names = list(THEME_PRESETS.keys())
+                if 0 <= idx < len(names):
+                    show_theme_preview(names[idx])
+        elif choice.isdigit():
+            idx = int(choice) - 1
+            names = list(THEME_PRESETS.keys())
+            if 0 <= idx < len(names):
+                name = names[idx]
+                
+                # Install if needed
+                theme_dir = THEMES_DIR / f"NullSec-{name.capitalize()}"
+                if not theme_dir.exists():
+                    install_theme(name, verbose=True)
+                
+                # Apply theme
+                if apply_theme(name):
+                    print(f"  {C.GRN}[+] Theme applied: {THEME_PRESETS[name]['name']}{C.RST}")
+                else:
+                    print(f"  {C.YLW}[!] Theme installed but could not auto-apply{C.RST}")
+
+
+def main():
+    """Main entry point."""
+    import argparse
+    
+    parser = argparse.ArgumentParser(
+        description='NullSec Theme - Desktop Theme Engine'
+    )
+    parser.add_argument('--list', action='store_true',
+                        help='List available themes')
+    parser.add_argument('--install', metavar='THEME',
+                        help='Install a theme')
+    parser.add_argument('--install-all', action='store_true',
+                        help='Install all themes')
+    parser.add_argument('--apply', metavar='THEME',
+                        help='Apply a theme')
+    parser.add_argument('--preview', metavar='THEME',
+                        help='Preview theme colors')
+    parser.add_argument('--current', action='store_true',
+                        help='Show current theme')
+    
+    args = parser.parse_args()
+    
+    print_banner()
+    
+    if args.list:
+        print(f"  {C.BLD}Available Themes:{C.RST}\n")
+        for name, preset in THEME_PRESETS.items():
+            print(f"  {C.GRN}•{C.RST} {name:12} - {preset['name']}")
+        return 0
+    
+    if args.current:
+        current = get_current_theme()
+        if current:
+            print(f"  Current theme: {current}")
+        else:
+            print(f"  {C.DIM}No theme set{C.RST}")
+        return 0
+    
+    if args.preview:
+        show_theme_preview(args.preview)
+        return 0
+    
+    if args.install:
+        if install_theme(args.install, verbose=True):
+            print(f"  {C.GRN}[+] Theme installed{C.RST}")
+        return 0
+    
+    if args.install_all:
+        for name in THEME_PRESETS:
+            install_theme(name, verbose=True)
+        print(f"  {C.GRN}[+] All themes installed{C.RST}")
+        return 0
+    
+    if args.apply:
+        if args.apply not in THEME_PRESETS:
+            print(f"  {C.RED}[!] Unknown theme{C.RST}")
+            return 1
+        
+        # Install if needed
+        install_theme(args.apply, verbose=True)
+        
+        if apply_theme(args.apply):
+            print(f"  {C.GRN}[+] Theme applied{C.RST}")
+        return 0
+    
+    # Default: interactive mode
+    interactive_menu()
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

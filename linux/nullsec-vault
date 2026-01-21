@@ -1,0 +1,618 @@
+#!/usr/bin/env python3
+"""
+NullSec Vault - Encrypted Password Manager
+==========================================
+Secure CLI password vault with AES-256 encryption.
+
+Features:
+- AES-256-GCM encryption
+- PBKDF2 key derivation (600k iterations)
+- Password generation
+- Clipboard integration
+- Auto-clear clipboard
+- Search functionality
+
+(c) bad-antics development
+"""
+
+import os
+import sys
+import json
+import argparse
+import getpass
+import secrets
+import string
+import base64
+import hashlib
+import time
+import subprocess
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, List, Optional
+
+try:
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.backends import default_backend
+    HAS_CRYPTO = True
+except ImportError:
+    HAS_CRYPTO = False
+
+# ============================================================================
+# Colors
+# ============================================================================
+
+class C:
+    RST = '\033[0m'
+    BLD = '\033[1m'
+    DIM = '\033[2m'
+    RED = '\033[0;31m'
+    GRN = '\033[0;32m'
+    YLW = '\033[0;33m'
+    BLU = '\033[0;34m'
+    MAG = '\033[0;35m'
+    CYN = '\033[0;36m'
+
+# ============================================================================
+# Configuration
+# ============================================================================
+
+VAULT_DIR = Path.home() / '.nullsec' / 'vault'
+VAULT_FILE = VAULT_DIR / 'vault.enc'
+CONFIG_FILE = VAULT_DIR / 'config.json'
+
+KDF_ITERATIONS = 600000
+SALT_SIZE = 32
+NONCE_SIZE = 12
+KEY_SIZE = 32
+
+CLIPBOARD_TIMEOUT = 30  # seconds
+
+# ============================================================================
+# Encryption
+# ============================================================================
+
+def derive_key(master_password: str, salt: bytes) -> bytes:
+    """Derive encryption key from master password."""
+    if HAS_CRYPTO:
+        kdf = PBKDF2HMAC(
+            algorithm=hashes.SHA512(),
+            length=KEY_SIZE,
+            salt=salt,
+            iterations=KDF_ITERATIONS,
+            backend=default_backend()
+        )
+        return kdf.derive(master_password.encode('utf-8'))
+    else:
+        return hashlib.pbkdf2_hmac(
+            'sha512',
+            master_password.encode('utf-8'),
+            salt,
+            KDF_ITERATIONS,
+            dklen=KEY_SIZE
+        )
+
+
+def encrypt_vault(data: dict, master_password: str) -> bytes:
+    """Encrypt vault data."""
+    if not HAS_CRYPTO:
+        raise RuntimeError("cryptography library required")
+    
+    salt = secrets.token_bytes(SALT_SIZE)
+    nonce = secrets.token_bytes(NONCE_SIZE)
+    key = derive_key(master_password, salt)
+    
+    plaintext = json.dumps(data).encode('utf-8')
+    
+    aesgcm = AESGCM(key)
+    ciphertext = aesgcm.encrypt(nonce, plaintext, None)
+    
+    # Format: salt || nonce || ciphertext
+    return salt + nonce + ciphertext
+
+
+def decrypt_vault(encrypted: bytes, master_password: str) -> dict:
+    """Decrypt vault data."""
+    if not HAS_CRYPTO:
+        raise RuntimeError("cryptography library required")
+    
+    salt = encrypted[:SALT_SIZE]
+    nonce = encrypted[SALT_SIZE:SALT_SIZE + NONCE_SIZE]
+    ciphertext = encrypted[SALT_SIZE + NONCE_SIZE:]
+    
+    key = derive_key(master_password, salt)
+    
+    aesgcm = AESGCM(key)
+    try:
+        plaintext = aesgcm.decrypt(nonce, ciphertext, None)
+        return json.loads(plaintext.decode('utf-8'))
+    except Exception:
+        raise ValueError("Invalid master password or corrupted vault")
+
+
+# ============================================================================
+# Vault Operations
+# ============================================================================
+
+class Vault:
+    """Password vault manager."""
+    
+    def __init__(self):
+        self.data: Dict = {'entries': {}, 'metadata': {}}
+        self.master_password: Optional[str] = None
+        self.modified = False
+    
+    def initialize(self, master_password: str) -> None:
+        """Initialize a new vault."""
+        VAULT_DIR.mkdir(parents=True, exist_ok=True)
+        
+        self.master_password = master_password
+        self.data = {
+            'entries': {},
+            'metadata': {
+                'created': datetime.now().isoformat(),
+                'version': '1.0'
+            }
+        }
+        self.save()
+        
+        # Set secure permissions
+        os.chmod(VAULT_FILE, 0o600)
+        os.chmod(VAULT_DIR, 0o700)
+    
+    def load(self, master_password: str) -> bool:
+        """Load vault from disk."""
+        if not VAULT_FILE.exists():
+            return False
+        
+        try:
+            with open(VAULT_FILE, 'rb') as f:
+                encrypted = f.read()
+            
+            self.data = decrypt_vault(encrypted, master_password)
+            self.master_password = master_password
+            return True
+        except ValueError:
+            return False
+    
+    def save(self) -> None:
+        """Save vault to disk."""
+        if not self.master_password:
+            raise RuntimeError("Vault not initialized")
+        
+        self.data['metadata']['modified'] = datetime.now().isoformat()
+        
+        encrypted = encrypt_vault(self.data, self.master_password)
+        
+        with open(VAULT_FILE, 'wb') as f:
+            f.write(encrypted)
+        
+        self.modified = False
+    
+    def add_entry(self, name: str, username: str, password: str, 
+                  url: str = '', notes: str = '') -> None:
+        """Add a new password entry."""
+        self.data['entries'][name] = {
+            'username': username,
+            'password': password,
+            'url': url,
+            'notes': notes,
+            'created': datetime.now().isoformat(),
+            'modified': datetime.now().isoformat()
+        }
+        self.modified = True
+    
+    def get_entry(self, name: str) -> Optional[Dict]:
+        """Get a password entry."""
+        return self.data['entries'].get(name)
+    
+    def delete_entry(self, name: str) -> bool:
+        """Delete a password entry."""
+        if name in self.data['entries']:
+            del self.data['entries'][name]
+            self.modified = True
+            return True
+        return False
+    
+    def list_entries(self) -> List[str]:
+        """List all entry names."""
+        return sorted(self.data['entries'].keys())
+    
+    def search(self, query: str) -> List[str]:
+        """Search entries by name, username, or URL."""
+        query = query.lower()
+        results = []
+        
+        for name, entry in self.data['entries'].items():
+            if (query in name.lower() or 
+                query in entry.get('username', '').lower() or
+                query in entry.get('url', '').lower()):
+                results.append(name)
+        
+        return sorted(results)
+
+
+# ============================================================================
+# Password Generation
+# ============================================================================
+
+def generate_password(length: int = 24, use_symbols: bool = True) -> str:
+    """Generate a secure random password."""
+    chars = string.ascii_letters + string.digits
+    if use_symbols:
+        chars += "!@#$%^&*()-_=+[]{}|;:,.<>?"
+    
+    # Ensure at least one of each character type
+    password = [
+        secrets.choice(string.ascii_lowercase),
+        secrets.choice(string.ascii_uppercase),
+        secrets.choice(string.digits),
+    ]
+    
+    if use_symbols:
+        password.append(secrets.choice("!@#$%^&*"))
+    
+    # Fill the rest
+    password.extend(secrets.choice(chars) for _ in range(length - len(password)))
+    
+    # Shuffle
+    secrets.SystemRandom().shuffle(password)
+    
+    return ''.join(password)
+
+
+def generate_passphrase(num_words: int = 5) -> str:
+    """Generate a passphrase using random words."""
+    words = [
+        "alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf",
+        "hotel", "india", "juliet", "kilo", "lima", "mike", "november",
+        "oscar", "papa", "quebec", "romeo", "sierra", "tango", "uniform",
+        "victor", "whiskey", "xray", "yankee", "zulu", "cipher", "crypto",
+        "shadow", "phantom", "stealth", "vector", "matrix", "quantum"
+    ]
+    
+    return '-'.join(secrets.choice(words) for _ in range(num_words))
+
+
+# ============================================================================
+# Clipboard
+# ============================================================================
+
+def copy_to_clipboard(text: str) -> bool:
+    """Copy text to clipboard."""
+    try:
+        proc = subprocess.Popen(
+            ['xclip', '-selection', 'clipboard'],
+            stdin=subprocess.PIPE,
+            stderr=subprocess.DEVNULL
+        )
+        proc.communicate(text.encode('utf-8'))
+        return proc.returncode == 0
+    except FileNotFoundError:
+        pass
+    
+    try:
+        proc = subprocess.Popen(
+            ['xsel', '--clipboard', '--input'],
+            stdin=subprocess.PIPE,
+            stderr=subprocess.DEVNULL
+        )
+        proc.communicate(text.encode('utf-8'))
+        return proc.returncode == 0
+    except FileNotFoundError:
+        pass
+    
+    return False
+
+
+def clear_clipboard() -> None:
+    """Clear the clipboard."""
+    copy_to_clipboard('')
+
+
+def copy_with_timeout(text: str, timeout: int = CLIPBOARD_TIMEOUT) -> None:
+    """Copy to clipboard and clear after timeout."""
+    if copy_to_clipboard(text):
+        print(f"  {C.GRN}[+] Copied to clipboard (clearing in {timeout}s){C.RST}")
+        
+        # Fork process to clear clipboard
+        pid = os.fork()
+        if pid == 0:
+            # Child process
+            time.sleep(timeout)
+            clear_clipboard()
+            os._exit(0)
+
+
+# ============================================================================
+# CLI Interface
+# ============================================================================
+
+def print_banner():
+    """Print application banner."""
+    print(f"""
+{C.CYN}  ╔═══════════════════════════════════════════════════════════╗
+  ║                    NULLSEC VAULT                          ║
+  ║              Encrypted Password Manager                   ║
+  ╚═══════════════════════════════════════════════════════════╝{C.RST}
+""")
+
+
+def cmd_init(args) -> int:
+    """Initialize a new vault."""
+    if VAULT_FILE.exists():
+        print(f"  {C.YLW}[!] Vault already exists at {VAULT_FILE}{C.RST}")
+        response = input(f"  {C.YLW}Overwrite? (yes/NO):{C.RST} ")
+        if response.lower() != 'yes':
+            return 1
+    
+    print(f"  {C.BLD}Create New Vault{C.RST}\n")
+    
+    while True:
+        password = getpass.getpass(f"  {C.CYN}Master password:{C.RST} ")
+        if len(password) < 12:
+            print(f"  {C.RED}[!] Password must be at least 12 characters{C.RST}")
+            continue
+        
+        confirm = getpass.getpass(f"  {C.CYN}Confirm password:{C.RST} ")
+        if password != confirm:
+            print(f"  {C.RED}[!] Passwords don't match{C.RST}")
+            continue
+        break
+    
+    vault = Vault()
+    vault.initialize(password)
+    
+    print(f"\n  {C.GRN}[+] Vault created at {VAULT_FILE}{C.RST}")
+    print(f"  {C.DIM}Keep your master password safe!{C.RST}\n")
+    
+    return 0
+
+
+def cmd_add(args) -> int:
+    """Add a new entry."""
+    vault = Vault()
+    
+    password = getpass.getpass(f"  {C.CYN}Master password:{C.RST} ")
+    if not vault.load(password):
+        print(f"  {C.RED}[!] Invalid password or vault not found{C.RST}\n")
+        return 1
+    
+    name = args.name or input(f"  {C.CYN}Entry name:{C.RST} ").strip()
+    if not name:
+        print(f"  {C.RED}[!] Name required{C.RST}")
+        return 1
+    
+    if vault.get_entry(name):
+        print(f"  {C.YLW}[!] Entry '{name}' already exists{C.RST}")
+        return 1
+    
+    username = args.username or input(f"  {C.CYN}Username:{C.RST} ").strip()
+    url = args.url or input(f"  {C.CYN}URL (optional):{C.RST} ").strip()
+    
+    if args.generate:
+        entry_password = generate_password(args.length)
+        print(f"  {C.GRN}Generated password:{C.RST} {entry_password}")
+    else:
+        entry_password = getpass.getpass(f"  {C.CYN}Password:{C.RST} ")
+    
+    notes = input(f"  {C.CYN}Notes (optional):{C.RST} ").strip()
+    
+    vault.add_entry(name, username, entry_password, url, notes)
+    vault.save()
+    
+    print(f"\n  {C.GRN}[+] Entry '{name}' added{C.RST}\n")
+    
+    return 0
+
+
+def cmd_get(args) -> int:
+    """Get an entry."""
+    vault = Vault()
+    
+    password = getpass.getpass(f"  {C.CYN}Master password:{C.RST} ")
+    if not vault.load(password):
+        print(f"  {C.RED}[!] Invalid password or vault not found{C.RST}\n")
+        return 1
+    
+    entry = vault.get_entry(args.name)
+    if not entry:
+        print(f"  {C.RED}[!] Entry '{args.name}' not found{C.RST}\n")
+        return 1
+    
+    print(f"\n  {C.BLD}{args.name}{C.RST}")
+    print(f"  {C.DIM}{'─' * 40}{C.RST}")
+    print(f"  {C.CYN}Username:{C.RST} {entry['username']}")
+    
+    if args.show:
+        print(f"  {C.CYN}Password:{C.RST} {entry['password']}")
+    else:
+        print(f"  {C.CYN}Password:{C.RST} {'*' * 12}")
+        copy_with_timeout(entry['password'])
+    
+    if entry.get('url'):
+        print(f"  {C.CYN}URL:{C.RST} {entry['url']}")
+    if entry.get('notes'):
+        print(f"  {C.CYN}Notes:{C.RST} {entry['notes']}")
+    
+    print()
+    return 0
+
+
+def cmd_list(args) -> int:
+    """List all entries."""
+    vault = Vault()
+    
+    password = getpass.getpass(f"  {C.CYN}Master password:{C.RST} ")
+    if not vault.load(password):
+        print(f"  {C.RED}[!] Invalid password or vault not found{C.RST}\n")
+        return 1
+    
+    entries = vault.list_entries()
+    
+    if not entries:
+        print(f"\n  {C.DIM}Vault is empty{C.RST}\n")
+        return 0
+    
+    print(f"\n  {C.BLD}Vault Entries ({len(entries)}){C.RST}")
+    print(f"  {C.DIM}{'─' * 40}{C.RST}")
+    
+    for name in entries:
+        entry = vault.get_entry(name)
+        username = entry.get('username', '')
+        print(f"  {C.GRN}•{C.RST} {name} {C.DIM}({username}){C.RST}")
+    
+    print()
+    return 0
+
+
+def cmd_search(args) -> int:
+    """Search entries."""
+    vault = Vault()
+    
+    password = getpass.getpass(f"  {C.CYN}Master password:{C.RST} ")
+    if not vault.load(password):
+        print(f"  {C.RED}[!] Invalid password or vault not found{C.RST}\n")
+        return 1
+    
+    results = vault.search(args.query)
+    
+    if not results:
+        print(f"\n  {C.DIM}No matches found for '{args.query}'{C.RST}\n")
+        return 0
+    
+    print(f"\n  {C.BLD}Search Results ({len(results)}){C.RST}")
+    print(f"  {C.DIM}{'─' * 40}{C.RST}")
+    
+    for name in results:
+        entry = vault.get_entry(name)
+        username = entry.get('username', '')
+        print(f"  {C.GRN}•{C.RST} {name} {C.DIM}({username}){C.RST}")
+    
+    print()
+    return 0
+
+
+def cmd_delete(args) -> int:
+    """Delete an entry."""
+    vault = Vault()
+    
+    password = getpass.getpass(f"  {C.CYN}Master password:{C.RST} ")
+    if not vault.load(password):
+        print(f"  {C.RED}[!] Invalid password or vault not found{C.RST}\n")
+        return 1
+    
+    if not vault.get_entry(args.name):
+        print(f"  {C.RED}[!] Entry '{args.name}' not found{C.RST}\n")
+        return 1
+    
+    if not args.force:
+        confirm = input(f"  {C.YLW}Delete '{args.name}'? (yes/NO):{C.RST} ")
+        if confirm.lower() != 'yes':
+            print(f"  {C.DIM}Cancelled{C.RST}\n")
+            return 0
+    
+    vault.delete_entry(args.name)
+    vault.save()
+    
+    print(f"  {C.GRN}[+] Entry '{args.name}' deleted{C.RST}\n")
+    return 0
+
+
+def cmd_generate(args) -> int:
+    """Generate a password."""
+    if args.passphrase:
+        password = generate_passphrase(args.words)
+    else:
+        password = generate_password(args.length, not args.no_symbols)
+    
+    print(f"\n  {C.GRN}Generated:{C.RST} {password}")
+    
+    if args.copy:
+        copy_with_timeout(password)
+    
+    print()
+    return 0
+
+
+def main():
+    """Main entry point."""
+    parser = argparse.ArgumentParser(
+        description='NullSec Vault - Encrypted Password Manager'
+    )
+    subparsers = parser.add_subparsers(dest='command', help='Commands')
+    
+    # init
+    init_parser = subparsers.add_parser('init', help='Initialize vault')
+    
+    # add
+    add_parser = subparsers.add_parser('add', help='Add entry')
+    add_parser.add_argument('name', nargs='?', help='Entry name')
+    add_parser.add_argument('-u', '--username', help='Username')
+    add_parser.add_argument('--url', help='URL')
+    add_parser.add_argument('-g', '--generate', action='store_true',
+                           help='Generate password')
+    add_parser.add_argument('-l', '--length', type=int, default=24,
+                           help='Password length (default: 24)')
+    
+    # get
+    get_parser = subparsers.add_parser('get', help='Get entry')
+    get_parser.add_argument('name', help='Entry name')
+    get_parser.add_argument('-s', '--show', action='store_true',
+                           help='Show password (don\'t copy)')
+    
+    # list
+    list_parser = subparsers.add_parser('list', help='List entries')
+    
+    # search
+    search_parser = subparsers.add_parser('search', help='Search entries')
+    search_parser.add_argument('query', help='Search query')
+    
+    # delete
+    delete_parser = subparsers.add_parser('delete', help='Delete entry')
+    delete_parser.add_argument('name', help='Entry name')
+    delete_parser.add_argument('-f', '--force', action='store_true',
+                              help='Skip confirmation')
+    
+    # generate
+    gen_parser = subparsers.add_parser('generate', help='Generate password')
+    gen_parser.add_argument('-l', '--length', type=int, default=24,
+                           help='Password length (default: 24)')
+    gen_parser.add_argument('--no-symbols', action='store_true',
+                           help='No special characters')
+    gen_parser.add_argument('-p', '--passphrase', action='store_true',
+                           help='Generate word passphrase')
+    gen_parser.add_argument('-w', '--words', type=int, default=5,
+                           help='Number of words (default: 5)')
+    gen_parser.add_argument('-c', '--copy', action='store_true',
+                           help='Copy to clipboard')
+    
+    args = parser.parse_args()
+    
+    print_banner()
+    
+    if not HAS_CRYPTO:
+        print(f"  {C.RED}[!] cryptography library required{C.RST}")
+        print(f"  {C.DIM}Install: pip install cryptography{C.RST}\n")
+        return 1
+    
+    commands = {
+        'init': cmd_init,
+        'add': cmd_add,
+        'get': cmd_get,
+        'list': cmd_list,
+        'search': cmd_search,
+        'delete': cmd_delete,
+        'generate': cmd_generate,
+    }
+    
+    if args.command in commands:
+        return commands[args.command](args)
+    else:
+        parser.print_help()
+        return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

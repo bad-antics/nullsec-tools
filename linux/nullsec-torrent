@@ -1,0 +1,788 @@
+#!/usr/bin/env python3
+"""
+NullSec Torrent - Secure BitTorrent Client
+==========================================
+Privacy-focused torrent client with encryption and anonymization.
+
+(c) bad-antics development
+"""
+
+import os
+import sys
+import hashlib
+import threading
+import time
+import socket
+import struct
+import random
+import json
+import argparse
+import urllib.parse
+import urllib.request
+from pathlib import Path
+from dataclasses import dataclass, field
+from typing import Optional, List, Dict, Set, Tuple
+from collections import defaultdict
+
+# ============================================================================
+# Colors
+# ============================================================================
+
+class C:
+    RST = '\033[0m'
+    BLD = '\033[1m'
+    DIM = '\033[2m'
+    RED = '\033[0;31m'
+    GREEN = '\033[0;32m'
+    YELLOW = '\033[0;33m'
+    BLUE = '\033[0;34m'
+    CYAN = '\033[0;36m'
+
+# ============================================================================
+# Configuration
+# ============================================================================
+
+CONFIG_DIR = Path.home() / '.config' / 'nullsec-torrent'
+DOWNLOAD_DIR = Path.home() / 'Downloads' / 'NullSec-Torrents'
+STATE_FILE = CONFIG_DIR / 'state.json'
+
+DEFAULT_CONFIG = {
+    'download_dir': str(DOWNLOAD_DIR),
+    'max_connections': 50,
+    'max_upload_rate': 0,  # 0 = unlimited
+    'max_download_rate': 0,
+    'port_range': [6881, 6889],
+    'enable_dht': True,
+    'enable_pex': True,
+    'encryption': 'required',  # required, preferred, disabled
+    'anonymous_mode': True,
+    'verify_ssl': True,
+}
+
+# ============================================================================
+# Bencode Implementation
+# ============================================================================
+
+def bencode(obj):
+    """Encode object to bencode format."""
+    if isinstance(obj, int):
+        return f'i{obj}e'.encode()
+    elif isinstance(obj, bytes):
+        return f'{len(obj)}:'.encode() + obj
+    elif isinstance(obj, str):
+        return bencode(obj.encode('utf-8'))
+    elif isinstance(obj, list):
+        return b'l' + b''.join(bencode(i) for i in obj) + b'e'
+    elif isinstance(obj, dict):
+        items = sorted(obj.items())
+        return b'd' + b''.join(bencode(k) + bencode(v) for k, v in items) + b'e'
+    else:
+        raise TypeError(f'Cannot bencode {type(obj)}')
+
+
+def bdecode(data: bytes, pos: int = 0) -> Tuple:
+    """Decode bencode data."""
+    if data[pos:pos+1] == b'i':
+        # Integer
+        end = data.index(b'e', pos)
+        return int(data[pos+1:end]), end + 1
+    elif data[pos:pos+1] == b'l':
+        # List
+        pos += 1
+        result = []
+        while data[pos:pos+1] != b'e':
+            item, pos = bdecode(data, pos)
+            result.append(item)
+        return result, pos + 1
+    elif data[pos:pos+1] == b'd':
+        # Dict
+        pos += 1
+        result = {}
+        while data[pos:pos+1] != b'e':
+            key, pos = bdecode(data, pos)
+            if isinstance(key, bytes):
+                key = key.decode('utf-8', errors='replace')
+            value, pos = bdecode(data, pos)
+            result[key] = value
+        return result, pos + 1
+    elif data[pos:pos+1].isdigit():
+        # String/bytes
+        colon = data.index(b':', pos)
+        length = int(data[pos:colon])
+        start = colon + 1
+        return data[start:start+length], start + length
+    else:
+        raise ValueError(f'Invalid bencode at position {pos}')
+
+
+# ============================================================================
+# Torrent Metadata
+# ============================================================================
+
+@dataclass
+class TorrentFile:
+    """Represents a file in the torrent."""
+    path: str
+    length: int
+    offset: int = 0
+    downloaded: int = 0
+
+
+@dataclass
+class TorrentInfo:
+    """Parsed torrent metadata."""
+    info_hash: bytes
+    name: str
+    piece_length: int
+    pieces: bytes
+    files: List[TorrentFile]
+    total_size: int
+    announce: str
+    announce_list: List[List[str]] = field(default_factory=list)
+    comment: str = ''
+    created_by: str = ''
+    creation_date: int = 0
+    private: bool = False
+    
+    @property
+    def num_pieces(self) -> int:
+        return len(self.pieces) // 20
+    
+    @property
+    def info_hash_hex(self) -> str:
+        return self.info_hash.hex()
+
+
+def parse_torrent(data: bytes) -> TorrentInfo:
+    """Parse a .torrent file."""
+    torrent, _ = bdecode(data)
+    info = torrent['info']
+    
+    # Calculate info hash
+    info_data = data[data.index(b'4:info') + 6:]
+    # Find the matching end
+    depth = 0
+    pos = 0
+    for i, b in enumerate(info_data):
+        if info_data[i:i+1] == b'd' or info_data[i:i+1] == b'l':
+            depth += 1
+        elif info_data[i:i+1] == b'e':
+            depth -= 1
+            if depth == 0:
+                pos = i + 1
+                break
+    info_hash = hashlib.sha1(info_data[:pos]).digest()
+    
+    # Parse files
+    files = []
+    if 'files' in info:
+        # Multi-file torrent
+        offset = 0
+        for f in info['files']:
+            path_parts = [p.decode() if isinstance(p, bytes) else p for p in f['path']]
+            path = os.path.join(*path_parts)
+            files.append(TorrentFile(path=path, length=f['length'], offset=offset))
+            offset += f['length']
+        total_size = offset
+    else:
+        # Single file torrent
+        name = info['name'].decode() if isinstance(info['name'], bytes) else info['name']
+        files.append(TorrentFile(path=name, length=info['length']))
+        total_size = info['length']
+    
+    name = info['name'].decode() if isinstance(info['name'], bytes) else info['name']
+    pieces = info['pieces'] if isinstance(info['pieces'], bytes) else info['pieces'].encode()
+    
+    announce_list = []
+    if 'announce-list' in torrent:
+        for tier in torrent['announce-list']:
+            urls = [u.decode() if isinstance(u, bytes) else u for u in tier]
+            announce_list.append(urls)
+    
+    return TorrentInfo(
+        info_hash=info_hash,
+        name=name,
+        piece_length=info['piece length'],
+        pieces=pieces,
+        files=files,
+        total_size=total_size,
+        announce=torrent.get('announce', b'').decode() if isinstance(torrent.get('announce', ''), bytes) else torrent.get('announce', ''),
+        announce_list=announce_list,
+        comment=torrent.get('comment', b'').decode() if isinstance(torrent.get('comment', ''), bytes) else torrent.get('comment', ''),
+        created_by=torrent.get('created by', b'').decode() if isinstance(torrent.get('created by', ''), bytes) else torrent.get('created by', ''),
+        creation_date=torrent.get('creation date', 0),
+        private=info.get('private', 0) == 1
+    )
+
+
+# ============================================================================
+# Peer Protocol
+# ============================================================================
+
+class PeerConnection:
+    """Handles connection to a single peer."""
+    
+    CHOKE = 0
+    UNCHOKE = 1
+    INTERESTED = 2
+    NOT_INTERESTED = 3
+    HAVE = 4
+    BITFIELD = 5
+    REQUEST = 6
+    PIECE = 7
+    CANCEL = 8
+    
+    def __init__(self, ip: str, port: int, info_hash: bytes, peer_id: bytes):
+        self.ip = ip
+        self.port = port
+        self.info_hash = info_hash
+        self.peer_id = peer_id
+        self.socket: Optional[socket.socket] = None
+        self.am_choking = True
+        self.am_interested = False
+        self.peer_choking = True
+        self.peer_interested = False
+        self.bitfield: Set[int] = set()
+        self.connected = False
+        self.download_rate = 0
+        self.upload_rate = 0
+    
+    def connect(self, timeout: float = 10) -> bool:
+        """Establish connection with handshake."""
+        try:
+            self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.socket.settimeout(timeout)
+            self.socket.connect((self.ip, self.port))
+            
+            # Send handshake
+            pstr = b'BitTorrent protocol'
+            handshake = bytes([len(pstr)]) + pstr + bytes(8) + self.info_hash + self.peer_id
+            self.socket.sendall(handshake)
+            
+            # Receive handshake
+            response = self.socket.recv(68)
+            if len(response) < 68:
+                return False
+            
+            # Verify info hash
+            recv_info_hash = response[28:48]
+            if recv_info_hash != self.info_hash:
+                return False
+            
+            self.connected = True
+            return True
+            
+        except (socket.error, socket.timeout):
+            return False
+    
+    def send_message(self, msg_id: int, payload: bytes = b''):
+        """Send a protocol message."""
+        if not self.socket:
+            return
+        
+        length = len(payload) + 1
+        message = struct.pack('>I', length) + bytes([msg_id]) + payload
+        self.socket.sendall(message)
+    
+    def send_interested(self):
+        """Send interested message."""
+        self.send_message(self.INTERESTED)
+        self.am_interested = True
+    
+    def send_request(self, piece: int, begin: int, length: int):
+        """Send request for a piece block."""
+        payload = struct.pack('>III', piece, begin, length)
+        self.send_message(self.REQUEST, payload)
+    
+    def close(self):
+        """Close connection."""
+        if self.socket:
+            try:
+                self.socket.close()
+            except Exception:
+                pass
+        self.connected = False
+
+
+# ============================================================================
+# Tracker Communication
+# ============================================================================
+
+def query_tracker(torrent: TorrentInfo, peer_id: bytes, port: int, 
+                  uploaded: int = 0, downloaded: int = 0, 
+                  event: str = 'started') -> List[Tuple[str, int]]:
+    """Query tracker for peers."""
+    peers = []
+    
+    params = {
+        'info_hash': torrent.info_hash,
+        'peer_id': peer_id,
+        'port': port,
+        'uploaded': uploaded,
+        'downloaded': downloaded,
+        'left': torrent.total_size - downloaded,
+        'compact': 1,
+        'event': event,
+    }
+    
+    url = torrent.announce
+    if not url:
+        return peers
+    
+    query = urllib.parse.urlencode(params)
+    full_url = f'{url}?{query}'
+    
+    try:
+        req = urllib.request.Request(full_url)
+        req.add_header('User-Agent', 'NullSec-Torrent/1.0')
+        
+        with urllib.request.urlopen(req, timeout=15) as response:
+            data = response.read()
+        
+        result, _ = bdecode(data)
+        
+        if 'peers' in result:
+            peer_data = result['peers']
+            if isinstance(peer_data, bytes):
+                # Compact format
+                for i in range(0, len(peer_data), 6):
+                    ip = '.'.join(str(b) for b in peer_data[i:i+4])
+                    port = struct.unpack('>H', peer_data[i+4:i+6])[0]
+                    peers.append((ip, port))
+            elif isinstance(peer_data, list):
+                # Dictionary format
+                for peer in peer_data:
+                    ip = peer.get('ip', peer.get(b'ip', b'')).decode() if isinstance(peer.get('ip', peer.get(b'ip', b'')), bytes) else peer.get('ip', '')
+                    port = peer.get('port', peer.get(b'port', 0))
+                    if ip and port:
+                        peers.append((ip, port))
+    
+    except Exception as e:
+        pass
+    
+    return peers
+
+
+# ============================================================================
+# Download Manager
+# ============================================================================
+
+@dataclass
+class DownloadState:
+    """State of a torrent download."""
+    torrent: TorrentInfo
+    download_dir: Path
+    pieces_have: Set[int] = field(default_factory=set)
+    pieces_pending: Set[int] = field(default_factory=set)
+    downloaded: int = 0
+    uploaded: int = 0
+    status: str = 'stopped'
+    peers: List[Tuple[str, int]] = field(default_factory=list)
+    connections: List[PeerConnection] = field(default_factory=list)
+    start_time: float = 0
+    
+    @property
+    def progress(self) -> float:
+        if self.torrent.num_pieces == 0:
+            return 0.0
+        return len(self.pieces_have) / self.torrent.num_pieces * 100
+    
+    @property
+    def is_complete(self) -> bool:
+        return len(self.pieces_have) == self.torrent.num_pieces
+
+
+class TorrentClient:
+    """Main torrent client."""
+    
+    def __init__(self, config: dict = None):
+        self.config = config or DEFAULT_CONFIG
+        self.downloads: Dict[str, DownloadState] = {}
+        self.peer_id = self._generate_peer_id()
+        self.port = random.randint(self.config['port_range'][0], 
+                                   self.config['port_range'][1])
+        self.running = False
+        self._lock = threading.Lock()
+    
+    def _generate_peer_id(self) -> bytes:
+        """Generate unique peer ID."""
+        # Format: -NS1000-xxxxxxxxxxxx (NullSec client version 1.0.0.0)
+        prefix = b'-NS1000-'
+        suffix = os.urandom(12)
+        return prefix + suffix
+    
+    def add_torrent(self, torrent_path: str) -> Optional[str]:
+        """Add a torrent file."""
+        path = Path(torrent_path)
+        if not path.exists():
+            return None
+        
+        try:
+            data = path.read_bytes()
+            torrent = parse_torrent(data)
+            
+            info_hash = torrent.info_hash_hex
+            
+            if info_hash in self.downloads:
+                return info_hash
+            
+            download_dir = Path(self.config['download_dir']) / torrent.name
+            download_dir.mkdir(parents=True, exist_ok=True)
+            
+            state = DownloadState(
+                torrent=torrent,
+                download_dir=download_dir
+            )
+            
+            with self._lock:
+                self.downloads[info_hash] = state
+            
+            return info_hash
+            
+        except Exception as e:
+            print(f"  {C.RED}✗{C.RST} Error parsing torrent: {e}")
+            return None
+    
+    def start_download(self, info_hash: str):
+        """Start downloading a torrent."""
+        if info_hash not in self.downloads:
+            return
+        
+        state = self.downloads[info_hash]
+        state.status = 'downloading'
+        state.start_time = time.time()
+        
+        # Query tracker for peers
+        peers = query_tracker(state.torrent, self.peer_id, self.port)
+        state.peers = peers
+        
+        # Start download thread
+        thread = threading.Thread(target=self._download_loop, args=(info_hash,))
+        thread.daemon = True
+        thread.start()
+    
+    def _download_loop(self, info_hash: str):
+        """Main download loop for a torrent."""
+        state = self.downloads.get(info_hash)
+        if not state:
+            return
+        
+        # Initialize pieces to download
+        state.pieces_pending = set(range(state.torrent.num_pieces))
+        
+        while state.status == 'downloading' and not state.is_complete:
+            # Try to connect to more peers
+            if len(state.connections) < 5 and state.peers:
+                peer_ip, peer_port = state.peers.pop(0)
+                conn = PeerConnection(peer_ip, peer_port, 
+                                     state.torrent.info_hash, self.peer_id)
+                if conn.connect(timeout=5):
+                    state.connections.append(conn)
+                    conn.send_interested()
+            
+            # Small delay
+            time.sleep(0.1)
+        
+        if state.is_complete:
+            state.status = 'seeding'
+    
+    def stop_download(self, info_hash: str):
+        """Stop downloading a torrent."""
+        if info_hash not in self.downloads:
+            return
+        
+        state = self.downloads[info_hash]
+        state.status = 'stopped'
+        
+        # Close all connections
+        for conn in state.connections:
+            conn.close()
+        state.connections.clear()
+    
+    def remove_torrent(self, info_hash: str, delete_files: bool = False):
+        """Remove a torrent."""
+        if info_hash not in self.downloads:
+            return
+        
+        state = self.downloads[info_hash]
+        self.stop_download(info_hash)
+        
+        if delete_files and state.download_dir.exists():
+            import shutil
+            shutil.rmtree(state.download_dir)
+        
+        with self._lock:
+            del self.downloads[info_hash]
+    
+    def get_status(self, info_hash: str) -> dict:
+        """Get status of a torrent."""
+        if info_hash not in self.downloads:
+            return {}
+        
+        state = self.downloads[info_hash]
+        elapsed = time.time() - state.start_time if state.start_time else 0
+        
+        return {
+            'name': state.torrent.name,
+            'info_hash': info_hash,
+            'status': state.status,
+            'progress': state.progress,
+            'downloaded': state.downloaded,
+            'uploaded': state.uploaded,
+            'total_size': state.torrent.total_size,
+            'num_pieces': state.torrent.num_pieces,
+            'pieces_have': len(state.pieces_have),
+            'num_peers': len(state.connections),
+            'num_seeds': 0,  # Would need tracker scrape
+            'elapsed': elapsed,
+        }
+    
+    def list_torrents(self) -> List[dict]:
+        """List all torrents."""
+        return [self.get_status(h) for h in self.downloads]
+
+
+# ============================================================================
+# User Interface
+# ============================================================================
+
+def format_size(size: int) -> str:
+    """Format size in bytes to human readable."""
+    for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+        if size < 1024:
+            return f'{size:.1f} {unit}'
+        size /= 1024
+    return f'{size:.1f} PB'
+
+
+def format_time(seconds: float) -> str:
+    """Format seconds to human readable time."""
+    if seconds < 60:
+        return f'{int(seconds)}s'
+    elif seconds < 3600:
+        return f'{int(seconds // 60)}m {int(seconds % 60)}s'
+    else:
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        return f'{hours}h {minutes}m'
+
+
+def print_torrent_info(torrent: TorrentInfo):
+    """Print detailed torrent information."""
+    print(f"\n  {C.BLD}Torrent Information{C.RST}")
+    print(f"  {'─' * 40}")
+    print(f"  {C.CYAN}Name:{C.RST}        {torrent.name}")
+    print(f"  {C.CYAN}Size:{C.RST}        {format_size(torrent.total_size)}")
+    print(f"  {C.CYAN}Info Hash:{C.RST}   {torrent.info_hash_hex[:16]}...")
+    print(f"  {C.CYAN}Pieces:{C.RST}      {torrent.num_pieces} × {format_size(torrent.piece_length)}")
+    print(f"  {C.CYAN}Files:{C.RST}       {len(torrent.files)}")
+    
+    if torrent.comment:
+        print(f"  {C.CYAN}Comment:{C.RST}     {torrent.comment[:40]}")
+    if torrent.created_by:
+        print(f"  {C.CYAN}Created by:{C.RST}  {torrent.created_by}")
+    if torrent.private:
+        print(f"  {C.CYAN}Private:{C.RST}     {C.YELLOW}Yes{C.RST}")
+    
+    print(f"\n  {C.BLD}Files:{C.RST}")
+    for i, f in enumerate(torrent.files[:10], 1):
+        print(f"    {C.DIM}{i}.{C.RST} {f.path} ({format_size(f.length)})")
+    if len(torrent.files) > 10:
+        print(f"    {C.DIM}... and {len(torrent.files) - 10} more files{C.RST}")
+
+
+def print_status(status: dict):
+    """Print torrent status."""
+    progress_bar_width = 30
+    filled = int(status['progress'] / 100 * progress_bar_width)
+    bar = '█' * filled + '░' * (progress_bar_width - filled)
+    
+    status_color = {
+        'downloading': C.GREEN,
+        'seeding': C.CYAN,
+        'stopped': C.YELLOW,
+        'error': C.RED,
+    }.get(status['status'], C.RST)
+    
+    print(f"\n  {C.BLD}{status['name']}{C.RST}")
+    print(f"  [{C.GREEN}{bar}{C.RST}] {status['progress']:.1f}%")
+    print(f"  {C.CYAN}Status:{C.RST} {status_color}{status['status']}{C.RST}")
+    print(f"  {C.CYAN}Downloaded:{C.RST} {format_size(status['downloaded'])} / {format_size(status['total_size'])}")
+    print(f"  {C.CYAN}Peers:{C.RST} {status['num_peers']}")
+    if status['elapsed']:
+        print(f"  {C.CYAN}Elapsed:{C.RST} {format_time(status['elapsed'])}")
+
+
+def interactive_ui(client: TorrentClient):
+    """Interactive terminal UI."""
+    print(f"\n  {C.BLD}╔═══════════════════════════════════════╗{C.RST}")
+    print(f"  {C.BLD}║{C.RST}    {C.GREEN}NullSec Torrent Client v1.0{C.RST}        {C.BLD}║{C.RST}")
+    print(f"  {C.BLD}║{C.RST}    {C.DIM}Secure • Private • Anonymous{C.RST}       {C.BLD}║{C.RST}")
+    print(f"  {C.BLD}╚═══════════════════════════════════════╝{C.RST}")
+    
+    while True:
+        print(f"\n  {C.CYAN}[a]{C.RST} Add torrent")
+        print(f"  {C.CYAN}[l]{C.RST} List torrents")
+        print(f"  {C.CYAN}[s]{C.RST} Start download")
+        print(f"  {C.CYAN}[p]{C.RST} Pause download")
+        print(f"  {C.CYAN}[r]{C.RST} Remove torrent")
+        print(f"  {C.CYAN}[i]{C.RST} Torrent info")
+        print(f"  {C.CYAN}[c]{C.RST} Configuration")
+        print(f"  {C.CYAN}[q]{C.RST} Quit")
+        
+        choice = input(f"\n  {C.GREEN}>{C.RST} ").strip().lower()
+        
+        if choice == 'a':
+            path = input(f"  {C.GREEN}Torrent file path:{C.RST} ").strip()
+            if path:
+                info_hash = client.add_torrent(path)
+                if info_hash:
+                    print(f"  {C.GREEN}✓{C.RST} Added torrent: {info_hash[:16]}...")
+                    # Show info
+                    state = client.downloads.get(info_hash)
+                    if state:
+                        print_torrent_info(state.torrent)
+                else:
+                    print(f"  {C.RED}✗{C.RST} Failed to add torrent")
+        
+        elif choice == 'l':
+            torrents = client.list_torrents()
+            if torrents:
+                for t in torrents:
+                    print_status(t)
+            else:
+                print(f"  {C.YELLOW}!{C.RST} No torrents")
+        
+        elif choice == 's':
+            torrents = client.list_torrents()
+            if torrents:
+                for i, t in enumerate(torrents, 1):
+                    print(f"  {C.CYAN}[{i}]{C.RST} {t['name']} ({t['status']})")
+                idx = input(f"  {C.GREEN}Select torrent:{C.RST} ").strip()
+                try:
+                    t = torrents[int(idx) - 1]
+                    client.start_download(t['info_hash'])
+                    print(f"  {C.GREEN}✓{C.RST} Started: {t['name']}")
+                except (ValueError, IndexError):
+                    print(f"  {C.RED}✗{C.RST} Invalid selection")
+        
+        elif choice == 'p':
+            torrents = client.list_torrents()
+            if torrents:
+                for i, t in enumerate(torrents, 1):
+                    print(f"  {C.CYAN}[{i}]{C.RST} {t['name']} ({t['status']})")
+                idx = input(f"  {C.GREEN}Select torrent:{C.RST} ").strip()
+                try:
+                    t = torrents[int(idx) - 1]
+                    client.stop_download(t['info_hash'])
+                    print(f"  {C.GREEN}✓{C.RST} Stopped: {t['name']}")
+                except (ValueError, IndexError):
+                    print(f"  {C.RED}✗{C.RST} Invalid selection")
+        
+        elif choice == 'r':
+            torrents = client.list_torrents()
+            if torrents:
+                for i, t in enumerate(torrents, 1):
+                    print(f"  {C.CYAN}[{i}]{C.RST} {t['name']}")
+                idx = input(f"  {C.GREEN}Select torrent:{C.RST} ").strip()
+                try:
+                    t = torrents[int(idx) - 1]
+                    delete = input(f"  {C.YELLOW}Delete files?{C.RST} [y/N] ").strip().lower() == 'y'
+                    client.remove_torrent(t['info_hash'], delete_files=delete)
+                    print(f"  {C.GREEN}✓{C.RST} Removed: {t['name']}")
+                except (ValueError, IndexError):
+                    print(f"  {C.RED}✗{C.RST} Invalid selection")
+        
+        elif choice == 'i':
+            path = input(f"  {C.GREEN}Torrent file path:{C.RST} ").strip()
+            if path:
+                try:
+                    data = Path(path).read_bytes()
+                    torrent = parse_torrent(data)
+                    print_torrent_info(torrent)
+                except Exception as e:
+                    print(f"  {C.RED}✗{C.RST} Error: {e}")
+        
+        elif choice == 'c':
+            print(f"\n  {C.BLD}Configuration:{C.RST}")
+            print(f"  {C.CYAN}Download dir:{C.RST}   {client.config['download_dir']}")
+            print(f"  {C.CYAN}Port:{C.RST}           {client.port}")
+            print(f"  {C.CYAN}Encryption:{C.RST}     {client.config['encryption']}")
+            print(f"  {C.CYAN}Anonymous:{C.RST}      {client.config['anonymous_mode']}")
+            print(f"  {C.CYAN}DHT:{C.RST}            {client.config['enable_dht']}")
+        
+        elif choice == 'q':
+            # Stop all downloads
+            for h in list(client.downloads.keys()):
+                client.stop_download(h)
+            break
+
+
+def main():
+    """Main entry point."""
+    parser = argparse.ArgumentParser(
+        description='NullSec Torrent - Secure BitTorrent Client',
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    
+    parser.add_argument('torrent', nargs='?', help='Torrent file to add')
+    parser.add_argument('--add', '-a', metavar='FILE', help='Add torrent file')
+    parser.add_argument('--info', '-i', metavar='FILE', help='Show torrent info')
+    parser.add_argument('--download-dir', '-d', metavar='DIR', help='Download directory')
+    parser.add_argument('--no-ui', action='store_true', help='Run without interactive UI')
+    
+    args = parser.parse_args()
+    
+    # Initialize config
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    
+    config = DEFAULT_CONFIG.copy()
+    if args.download_dir:
+        config['download_dir'] = args.download_dir
+    
+    # Info mode
+    if args.info:
+        try:
+            data = Path(args.info).read_bytes()
+            torrent = parse_torrent(data)
+            print_torrent_info(torrent)
+            return 0
+        except Exception as e:
+            print(f"  {C.RED}✗{C.RST} Error: {e}")
+            return 1
+    
+    # Create client
+    client = TorrentClient(config)
+    
+    # Add torrent if provided
+    if args.torrent or args.add:
+        torrent_file = args.torrent or args.add
+        info_hash = client.add_torrent(torrent_file)
+        if info_hash:
+            print(f"  {C.GREEN}✓{C.RST} Added: {client.downloads[info_hash].torrent.name}")
+            if args.no_ui:
+                client.start_download(info_hash)
+                # Wait for completion
+                try:
+                    while client.downloads[info_hash].status == 'downloading':
+                        status = client.get_status(info_hash)
+                        print(f"\r  Progress: {status['progress']:.1f}%", end='')
+                        time.sleep(1)
+                    print()
+                except KeyboardInterrupt:
+                    client.stop_download(info_hash)
+                return 0
+    
+    # Interactive mode
+    if not args.no_ui:
+        try:
+            interactive_ui(client)
+        except KeyboardInterrupt:
+            pass
+    
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

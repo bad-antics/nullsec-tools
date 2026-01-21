@@ -1,0 +1,412 @@
+#!/usr/bin/env python3
+"""
+NullSec Fetch - System Information Display
+==========================================
+Custom neofetch-style system information tool.
+
+(c) bad-antics development
+"""
+
+import os
+import sys
+import platform
+import subprocess
+import re
+from pathlib import Path
+
+# ============================================================================
+# Colors and Styling
+# ============================================================================
+
+class C:
+    RST = '\033[0m'
+    BLD = '\033[1m'
+    DIM = '\033[2m'
+    
+    # NullSec color palette
+    BLACK = '\033[0;30m'
+    RED = '\033[0;31m'
+    GREEN = '\033[0;32m'
+    YELLOW = '\033[0;33m'
+    BLUE = '\033[0;34m'
+    MAGENTA = '\033[0;35m'
+    CYAN = '\033[0;36m'
+    WHITE = '\033[0;37m'
+    
+    # Bright variants
+    BRED = '\033[1;31m'
+    BGREEN = '\033[1;32m'
+    BYELLOW = '\033[1;33m'
+    BBLUE = '\033[1;34m'
+    BMAGENTA = '\033[1;35m'
+    BCYAN = '\033[1;36m'
+    BWHITE = '\033[1;37m'
+
+# ASCII Art logos
+LOGOS = {
+    'default': f'''{C.GREEN}
+      ███╗   ██╗██╗   ██╗██╗     ██╗     ███████╗███████╗ ██████╗
+      ████╗  ██║██║   ██║██║     ██║     ██╔════╝██╔════╝██╔════╝
+      ██╔██╗ ██║██║   ██║██║     ██║     ███████╗█████╗  ██║     
+      ██║╚██╗██║██║   ██║██║     ██║     ╚════██║██╔══╝  ██║     
+      ██║ ╚████║╚██████╔╝███████╗███████╗███████║███████╗╚██████╗
+      ╚═╝  ╚═══╝ ╚═════╝ ╚══════╝╚══════╝╚══════╝╚══════╝ ╚═════╝
+{C.RST}''',
+    
+    'small': f'''{C.GREEN}
+       _   _       _ _ ____            
+      | \\ | |_   _| | / ___|  ___  ___ 
+      |  \\| | | | | | \\___ \\ / _ \\/ __|
+      | |\\  | |_| | | |___) |  __/ (__ 
+      |_| \\_|\\__,_|_|_|____/ \\___|\\___|
+{C.RST}''',
+
+    'minimal': f'''{C.GREEN}
+      ╔╗╔╦ ╦╦  ╦  ╔═╗╔═╗╔═╗
+      ║║║║ ║║  ║  ╚═╗║╣ ║  
+      ╝╚╝╚═╝╩═╝╩═╝╚═╝╚═╝╚═╝
+{C.RST}''',
+
+    'block': f'''{C.GREEN}
+      ██████   █████ █████ █████ █████      █████████  ██████████   █████████ 
+      ░░██████ ░░███ ░░███ ░░███ ░░███      ███░░░░░███░░███░░░░░█  ███░░░░░███
+       ░███░███ ░███  ░███  ░███  ░███     ░███    ░░░  ░███  █ ░  ███     ░░░ 
+       ░███░░███░███  ░███  ░███  ░███     ░░█████████  ░██████   ░███         
+       ░███ ░░██████  ░███  ░███  ░███      ░░░░░░░░███ ░███░░█   ░███         
+       ░███  ░░█████  ░███  ░███  ░███      ███    ░███ ░███ ░   █░░███     ███
+       █████  ░░█████ ░░████████  ████████ ░░█████████  ██████████ ░░█████████ 
+      ░░░░░    ░░░░░   ░░░░░░░░  ░░░░░░░░   ░░░░░░░░░  ░░░░░░░░░░   ░░░░░░░░░  
+{C.RST}''',
+
+    'hacker': f'''{C.GREEN}
+      ░▒▓███████▓▒░░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░      ▒▓█▓▒░      ░▒▓███████▓▒░▒▓████████▓▒░▒▓██████▓▒░  
+      ░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░      ▒▓█▓▒░     ░▒▓█▓▒░      ░▒▓█▓▒░     ░▒▓█▓▒░░▒▓█▓▒░ 
+      ░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░      ▒▓█▓▒░     ░▒▓█▓▒░      ░▒▓█▓▒░     ░▒▓█▓▒░        
+      ░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░      ▒▓█▓▒░      ░▒▓██████▓▒░░▒▓██████▓▒░░▒▓█▓▒░        
+      ░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░      ▒▓█▓▒░            ░▒▓█▓▒░▒▓█▓▒░     ░▒▓█▓▒░        
+      ░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░      ▒▓█▓▒░            ░▒▓█▓▒░▒▓█▓▒░     ░▒▓█▓▒░░▒▓█▓▒░ 
+      ░▒▓█▓▒░░▒▓█▓▒░░▒▓██████▓▒░░▒▓████████▓▒░▒▓████████▓▒░▒▓███████▓▒░▒▓████████▓▒░▒▓██████▓▒░  
+{C.RST}''',
+}
+
+# ============================================================================
+# System Information Gathering
+# ============================================================================
+
+def get_distro() -> str:
+    """Get distribution name."""
+    try:
+        with open('/etc/os-release', 'r') as f:
+            for line in f:
+                if line.startswith('PRETTY_NAME='):
+                    return line.split('=')[1].strip().strip('"')
+    except Exception:
+        pass
+    return platform.system()
+
+
+def get_kernel() -> str:
+    """Get kernel version."""
+    return platform.release()
+
+
+def get_uptime() -> str:
+    """Get system uptime."""
+    try:
+        with open('/proc/uptime', 'r') as f:
+            uptime_seconds = float(f.readline().split()[0])
+        
+        days = int(uptime_seconds // 86400)
+        hours = int((uptime_seconds % 86400) // 3600)
+        minutes = int((uptime_seconds % 3600) // 60)
+        
+        parts = []
+        if days > 0:
+            parts.append(f"{days}d")
+        if hours > 0:
+            parts.append(f"{hours}h")
+        parts.append(f"{minutes}m")
+        
+        return ' '.join(parts)
+    except Exception:
+        return 'unknown'
+
+
+def get_packages() -> str:
+    """Get installed package count."""
+    counts = []
+    
+    # dpkg
+    try:
+        result = subprocess.run(['dpkg', '-l'], capture_output=True, text=True)
+        count = len([l for l in result.stdout.split('\n') if l.startswith('ii')])
+        if count > 0:
+            counts.append(f"{count} (dpkg)")
+    except Exception:
+        pass
+    
+    # pip
+    try:
+        result = subprocess.run(['pip3', 'list', '--format=freeze'], 
+                              capture_output=True, text=True)
+        count = len(result.stdout.strip().split('\n'))
+        if count > 0:
+            counts.append(f"{count} (pip)")
+    except Exception:
+        pass
+    
+    return ', '.join(counts) if counts else 'unknown'
+
+
+def get_shell() -> str:
+    """Get current shell."""
+    shell = os.environ.get('SHELL', '/bin/bash')
+    shell_name = Path(shell).name
+    
+    # Try to get version
+    try:
+        result = subprocess.run([shell, '--version'], capture_output=True, text=True)
+        version = result.stdout.split('\n')[0]
+        if 'bash' in shell_name.lower():
+            match = re.search(r'version (\d+\.\d+)', version)
+            if match:
+                return f"{shell_name} {match.group(1)}"
+    except Exception:
+        pass
+    
+    return shell_name
+
+
+def get_de() -> str:
+    """Get desktop environment."""
+    de = os.environ.get('XDG_CURRENT_DESKTOP', '')
+    if not de:
+        de = os.environ.get('DESKTOP_SESSION', '')
+    return de or 'unknown'
+
+
+def get_wm() -> str:
+    """Get window manager."""
+    try:
+        result = subprocess.run(['wmctrl', '-m'], capture_output=True, text=True)
+        for line in result.stdout.split('\n'):
+            if line.startswith('Name:'):
+                return line.split(':')[1].strip()
+    except Exception:
+        pass
+    return 'unknown'
+
+
+def get_terminal() -> str:
+    """Get terminal emulator."""
+    term = os.environ.get('TERM_PROGRAM', '')
+    if not term:
+        term = os.environ.get('TERM', '')
+    return term or 'unknown'
+
+
+def get_cpu() -> str:
+    """Get CPU information."""
+    try:
+        with open('/proc/cpuinfo', 'r') as f:
+            for line in f:
+                if line.startswith('model name'):
+                    cpu = line.split(':')[1].strip()
+                    # Clean up
+                    cpu = re.sub(r'\(R\)|\(TM\)|CPU|@.*', '', cpu)
+                    cpu = ' '.join(cpu.split())
+                    return cpu
+    except Exception:
+        pass
+    return platform.processor() or 'unknown'
+
+
+def get_gpu() -> str:
+    """Get GPU information."""
+    try:
+        result = subprocess.run(['lspci'], capture_output=True, text=True)
+        for line in result.stdout.split('\n'):
+            if 'VGA' in line or '3D' in line:
+                # Extract GPU name
+                parts = line.split(':')
+                if len(parts) >= 3:
+                    gpu = parts[2].strip()
+                    # Clean up common prefixes
+                    gpu = re.sub(r'^\[.*?\]\s*', '', gpu)
+                    gpu = gpu.split('[')[0].strip()
+                    return gpu[:40]
+    except Exception:
+        pass
+    return 'unknown'
+
+
+def get_memory() -> str:
+    """Get memory usage."""
+    try:
+        with open('/proc/meminfo', 'r') as f:
+            meminfo = {}
+            for line in f:
+                parts = line.split(':')
+                if len(parts) == 2:
+                    key = parts[0].strip()
+                    value = int(parts[1].strip().split()[0])
+                    meminfo[key] = value
+            
+            total = meminfo.get('MemTotal', 0) / 1024 / 1024
+            available = meminfo.get('MemAvailable', 0) / 1024 / 1024
+            used = total - available
+            
+            return f"{used:.1f}GB / {total:.1f}GB"
+    except Exception:
+        pass
+    return 'unknown'
+
+
+def get_disk() -> str:
+    """Get disk usage."""
+    try:
+        result = subprocess.run(['df', '-h', '/'], capture_output=True, text=True)
+        lines = result.stdout.strip().split('\n')
+        if len(lines) >= 2:
+            parts = lines[1].split()
+            if len(parts) >= 4:
+                return f"{parts[2]} / {parts[1]} ({parts[4]})"
+    except Exception:
+        pass
+    return 'unknown'
+
+
+def get_resolution() -> str:
+    """Get screen resolution."""
+    try:
+        result = subprocess.run(['xrandr', '--current'], capture_output=True, text=True)
+        for line in result.stdout.split('\n'):
+            if ' connected' in line:
+                match = re.search(r'(\d+x\d+)', line)
+                if match:
+                    return match.group(1)
+    except Exception:
+        pass
+    return 'unknown'
+
+
+def get_local_ip() -> str:
+    """Get local IP address."""
+    try:
+        result = subprocess.run(['hostname', '-I'], capture_output=True, text=True)
+        ips = result.stdout.strip().split()
+        return ips[0] if ips else 'unknown'
+    except Exception:
+        pass
+    return 'unknown'
+
+
+# ============================================================================
+# Display Functions
+# ============================================================================
+
+def print_color_blocks():
+    """Print color palette blocks."""
+    colors = [
+        '\033[0;30m', '\033[0;31m', '\033[0;32m', '\033[0;33m',
+        '\033[0;34m', '\033[0;35m', '\033[0;36m', '\033[0;37m',
+    ]
+    bright = [
+        '\033[1;30m', '\033[1;31m', '\033[1;32m', '\033[1;33m',
+        '\033[1;34m', '\033[1;35m', '\033[1;36m', '\033[1;37m',
+    ]
+    
+    line1 = ''.join(f'{c}███' for c in colors) + C.RST
+    line2 = ''.join(f'{c}███' for c in bright) + C.RST
+    
+    return line1, line2
+
+
+def display_info(logo_style: str = 'default'):
+    """Display system information with logo."""
+    
+    # Gather info
+    info = [
+        (f'{C.CYAN}user{C.RST}@{C.CYAN}host{C.RST}', f"{os.environ.get('USER', 'user')}@{platform.node()}"),
+        ('', f'{C.DIM}{"─" * 30}{C.RST}'),
+        (f'{C.CYAN}OS{C.RST}', get_distro()),
+        (f'{C.CYAN}Kernel{C.RST}', get_kernel()),
+        (f'{C.CYAN}Uptime{C.RST}', get_uptime()),
+        (f'{C.CYAN}Packages{C.RST}', get_packages()),
+        (f'{C.CYAN}Shell{C.RST}', get_shell()),
+        (f'{C.CYAN}DE{C.RST}', get_de()),
+        (f'{C.CYAN}Terminal{C.RST}', get_terminal()),
+        (f'{C.CYAN}CPU{C.RST}', get_cpu()),
+        (f'{C.CYAN}GPU{C.RST}', get_gpu()),
+        (f'{C.CYAN}Memory{C.RST}', get_memory()),
+        (f'{C.CYAN}Disk{C.RST}', get_disk()),
+        (f'{C.CYAN}Resolution{C.RST}', get_resolution()),
+        (f'{C.CYAN}Local IP{C.RST}', get_local_ip()),
+        ('', ''),
+    ]
+    
+    # Add color blocks
+    blocks = print_color_blocks()
+    info.append(('', blocks[0]))
+    info.append(('', blocks[1]))
+    
+    # Get logo
+    logo = LOGOS.get(logo_style, LOGOS['default'])
+    logo_lines = logo.strip().split('\n')
+    
+    # Print side by side
+    print()
+    
+    max_logo_width = max(len(re.sub(r'\033\[[0-9;]*m', '', line)) for line in logo_lines)
+    
+    for i, line in enumerate(logo_lines):
+        # Calculate visible width (strip ANSI codes for width calculation)
+        visible_width = len(re.sub(r'\033\[[0-9;]*m', '', line))
+        padding = max_logo_width - visible_width + 4
+        
+        if i < len(info):
+            label, value = info[i]
+            if label:
+                print(f"{line}{' ' * padding}{label}: {value}")
+            else:
+                print(f"{line}{' ' * padding}{value}")
+        else:
+            print(line)
+    
+    # Print remaining info
+    for i in range(len(logo_lines), len(info)):
+        label, value = info[i]
+        padding = max_logo_width + 4
+        if label:
+            print(f"{' ' * padding}{label}: {value}")
+        else:
+            print(f"{' ' * padding}{value}")
+    
+    print()
+
+
+def main():
+    """Main entry point."""
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='NullSec Fetch - System Information')
+    parser.add_argument('--logo', choices=list(LOGOS.keys()), default='small',
+                        help='Logo style to display')
+    parser.add_argument('--list-logos', action='store_true',
+                        help='List available logo styles')
+    
+    args = parser.parse_args()
+    
+    if args.list_logos:
+        print(f"\n  {C.BLD}Available logos:{C.RST}")
+        for name in LOGOS:
+            print(f"  {C.GREEN}•{C.RST} {name}")
+        print()
+        return 0
+    
+    display_info(args.logo)
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

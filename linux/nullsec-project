@@ -1,0 +1,1161 @@
+#!/usr/bin/env python3
+"""
+NullSec Project - Multi-Language Project Scaffolder
+====================================================
+Generate project templates for various languages and frameworks.
+
+(c) bad-antics development
+"""
+
+import os
+import sys
+import argparse
+import subprocess
+import shutil
+from pathlib import Path
+from datetime import datetime
+from typing import Dict, List, Optional
+
+# ============================================================================
+# Colors
+# ============================================================================
+
+class C:
+    RST = '\033[0m'
+    BLD = '\033[1m'
+    DIM = '\033[2m'
+    RED = '\033[0;31m'
+    GREEN = '\033[0;32m'
+    YELLOW = '\033[0;33m'
+    BLUE = '\033[0;34m'
+    CYAN = '\033[0;36m'
+
+# ============================================================================
+# Project Templates
+# ============================================================================
+
+TEMPLATES = {
+    # Python templates
+    'python': {
+        'name': 'Python Project',
+        'description': 'Standard Python project with virtual environment',
+        'files': {
+            'main.py': '''#!/usr/bin/env python3
+"""
+{name} - Main Entry Point
+{description}
+
+(c) {year} {author}
+"""
+
+import sys
+
+
+def main():
+    """Main entry point."""
+    print("Hello from {name}!")
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
+''',
+            'requirements.txt': '''# Project dependencies
+# Add your dependencies here
+''',
+            'setup.py': '''#!/usr/bin/env python3
+from setuptools import setup, find_packages
+
+setup(
+    name='{name_lower}',
+    version='0.1.0',
+    description='{description}',
+    author='{author}',
+    packages=find_packages(),
+    python_requires='>=3.8',
+    entry_points={{
+        'console_scripts': [
+            '{name_lower}={name_lower}.main:main',
+        ],
+    }},
+)
+''',
+            'README.md': '''# {name}
+
+{description}
+
+## Installation
+
+```bash
+pip install -e .
+```
+
+## Usage
+
+```bash
+python main.py
+```
+
+## License
+
+MIT License - (c) {year} {author}
+''',
+            '.gitignore': '''# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+ENV/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# OS
+.DS_Store
+Thumbs.db
+'''
+        },
+        'commands': [
+            'python3 -m venv venv',
+            'echo "Virtual environment created. Activate with: source venv/bin/activate"'
+        ]
+    },
+    
+    'python-cli': {
+        'name': 'Python CLI Application',
+        'description': 'Python command-line application with argparse',
+        'files': {
+            '{name_lower}/__init__.py': '''"""
+{name} - {description}
+"""
+
+__version__ = '0.1.0'
+__author__ = '{author}'
+''',
+            '{name_lower}/main.py': '''#!/usr/bin/env python3
+"""
+{name} - Main Entry Point
+"""
+
+import argparse
+import sys
+
+
+def parse_args():
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(
+        description='{description}',
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    
+    parser.add_argument('--version', '-V', action='version', 
+                       version='%(prog)s 0.1.0')
+    parser.add_argument('--verbose', '-v', action='store_true',
+                       help='Enable verbose output')
+    
+    return parser.parse_args()
+
+
+def main():
+    """Main entry point."""
+    args = parse_args()
+    
+    if args.verbose:
+        print("Verbose mode enabled")
+    
+    print("Hello from {name}!")
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
+''',
+            'requirements.txt': '''# Dependencies
+''',
+            'setup.py': '''#!/usr/bin/env python3
+from setuptools import setup, find_packages
+
+setup(
+    name='{name_lower}',
+    version='0.1.0',
+    description='{description}',
+    author='{author}',
+    packages=find_packages(),
+    python_requires='>=3.8',
+    entry_points={{
+        'console_scripts': [
+            '{name_lower}={name_lower}.main:main',
+        ],
+    }},
+)
+''',
+            'README.md': '''# {name}
+
+{description}
+
+## Installation
+
+```bash
+pip install -e .
+```
+
+## Usage
+
+```bash
+{name_lower} --help
+```
+
+## License
+
+MIT License
+''',
+            '.gitignore': '''__pycache__/
+*.py[cod]
+venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+'''
+        }
+    },
+
+    # JavaScript/TypeScript templates
+    'node': {
+        'name': 'Node.js Project',
+        'description': 'Node.js project with ES modules',
+        'files': {
+            'package.json': '''{{
+    "name": "{name_lower}",
+    "version": "0.1.0",
+    "description": "{description}",
+    "main": "src/index.js",
+    "type": "module",
+    "scripts": {{
+        "start": "node src/index.js",
+        "dev": "node --watch src/index.js",
+        "test": "node --test"
+    }},
+    "keywords": [],
+    "author": "{author}",
+    "license": "MIT"
+}}
+''',
+            'src/index.js': '''#!/usr/bin/env node
+/**
+ * {name}
+ * {description}
+ * 
+ * (c) {year} {author}
+ */
+
+console.log('Hello from {name}!');
+''',
+            'README.md': '''# {name}
+
+{description}
+
+## Installation
+
+```bash
+npm install
+```
+
+## Usage
+
+```bash
+npm start
+```
+
+## Development
+
+```bash
+npm run dev
+```
+''',
+            '.gitignore': '''node_modules/
+dist/
+.env
+*.log
+.DS_Store
+'''
+        },
+        'commands': ['npm install']
+    },
+
+    'typescript': {
+        'name': 'TypeScript Project',
+        'description': 'TypeScript project with modern configuration',
+        'files': {
+            'package.json': '''{{
+    "name": "{name_lower}",
+    "version": "0.1.0",
+    "description": "{description}",
+    "main": "dist/index.js",
+    "type": "module",
+    "scripts": {{
+        "build": "tsc",
+        "start": "node dist/index.js",
+        "dev": "tsc --watch",
+        "test": "node --test"
+    }},
+    "keywords": [],
+    "author": "{author}",
+    "license": "MIT",
+    "devDependencies": {{
+        "typescript": "^5.0.0",
+        "@types/node": "^20.0.0"
+    }}
+}}
+''',
+            'tsconfig.json': '''{{
+    "compilerOptions": {{
+        "target": "ES2022",
+        "module": "NodeNext",
+        "moduleResolution": "NodeNext",
+        "outDir": "./dist",
+        "rootDir": "./src",
+        "strict": true,
+        "esModuleInterop": true,
+        "skipLibCheck": true,
+        "forceConsistentCasingInFileNames": true,
+        "declaration": true
+    }},
+    "include": ["src/**/*"],
+    "exclude": ["node_modules", "dist"]
+}}
+''',
+            'src/index.ts': '''/**
+ * {name}
+ * {description}
+ * 
+ * (c) {year} {author}
+ */
+
+function main(): void {{
+    console.log('Hello from {name}!');
+}}
+
+main();
+''',
+            'README.md': '''# {name}
+
+{description}
+
+## Installation
+
+```bash
+npm install
+```
+
+## Build
+
+```bash
+npm run build
+```
+
+## Usage
+
+```bash
+npm start
+```
+''',
+            '.gitignore': '''node_modules/
+dist/
+.env
+*.log
+'''
+        },
+        'commands': ['npm install']
+    },
+
+    # Rust template
+    'rust': {
+        'name': 'Rust Project',
+        'description': 'Rust project with Cargo',
+        'files': {
+            'Cargo.toml': '''[package]
+name = "{name_lower}"
+version = "0.1.0"
+edition = "2021"
+authors = ["{author}"]
+description = "{description}"
+
+[dependencies]
+
+[dev-dependencies]
+''',
+            'src/main.rs': '''//! {name}
+//! {description}
+//!
+//! (c) {year} {author}
+
+fn main() {{
+    println!("Hello from {name}!");
+}}
+''',
+            'README.md': '''# {name}
+
+{description}
+
+## Build
+
+```bash
+cargo build --release
+```
+
+## Run
+
+```bash
+cargo run
+```
+
+## Test
+
+```bash
+cargo test
+```
+''',
+            '.gitignore': '''/target
+Cargo.lock
+**/*.rs.bk
+'''
+        },
+        'commands': ['cargo build']
+    },
+
+    # Go template
+    'go': {
+        'name': 'Go Project',
+        'description': 'Go project with modules',
+        'files': {
+            'go.mod': '''module {name_lower}
+
+go 1.21
+''',
+            'main.go': '''// {name}
+// {description}
+//
+// (c) {year} {author}
+package main
+
+import "fmt"
+
+func main() {{
+	fmt.Println("Hello from {name}!")
+}}
+''',
+            'README.md': '''# {name}
+
+{description}
+
+## Build
+
+```bash
+go build
+```
+
+## Run
+
+```bash
+go run .
+```
+
+## Test
+
+```bash
+go test ./...
+```
+''',
+            '.gitignore': '''# Binaries
+{name_lower}
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary
+*.test
+
+# Output
+*.out
+
+# Go workspace file
+go.work
+'''
+        }
+    },
+
+    # C/C++ templates
+    'c': {
+        'name': 'C Project',
+        'description': 'C project with Makefile',
+        'files': {
+            'Makefile': '''CC = gcc
+CFLAGS = -Wall -Wextra -O2
+LDFLAGS = 
+TARGET = {name_lower}
+SRCS = src/main.c
+OBJS = $(SRCS:.c=.o)
+
+.PHONY: all clean
+
+all: $(TARGET)
+
+$(TARGET): $(OBJS)
+	$(CC) $(OBJS) -o $@ $(LDFLAGS)
+
+%.o: %.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+clean:
+	rm -f $(OBJS) $(TARGET)
+''',
+            'src/main.c': '''/**
+ * {name}
+ * {description}
+ *
+ * (c) {year} {author}
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+
+int main(int argc, char *argv[]) {{
+    printf("Hello from {name}!\\n");
+    return EXIT_SUCCESS;
+}}
+''',
+            'README.md': '''# {name}
+
+{description}
+
+## Build
+
+```bash
+make
+```
+
+## Run
+
+```bash
+./{name_lower}
+```
+
+## Clean
+
+```bash
+make clean
+```
+''',
+            '.gitignore': '''# Object files
+*.o
+*.obj
+
+# Executables
+{name_lower}
+*.exe
+
+# Debug files
+*.dSYM/
+'''
+        }
+    },
+
+    'cpp': {
+        'name': 'C++ Project',
+        'description': 'Modern C++ project with CMake',
+        'files': {
+            'CMakeLists.txt': '''cmake_minimum_required(VERSION 3.16)
+project({name_lower} VERSION 0.1.0 LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+add_executable(${{PROJECT_NAME}} src/main.cpp)
+''',
+            'src/main.cpp': '''/**
+ * {name}
+ * {description}
+ *
+ * (c) {year} {author}
+ */
+
+#include <iostream>
+
+int main() {{
+    std::cout << "Hello from {name}!" << std::endl;
+    return 0;
+}}
+''',
+            'README.md': '''# {name}
+
+{description}
+
+## Build
+
+```bash
+mkdir build && cd build
+cmake ..
+make
+```
+
+## Run
+
+```bash
+./build/{name_lower}
+```
+''',
+            '.gitignore': '''build/
+*.o
+*.obj
+{name_lower}
+compile_commands.json
+CMakeCache.txt
+CMakeFiles/
+'''
+        },
+        'commands': ['mkdir -p build']
+    },
+
+    # Shell script template
+    'bash': {
+        'name': 'Bash Script Project',
+        'description': 'Bash script with proper structure',
+        'files': {
+            '{name_lower}.sh': '''#!/usr/bin/env bash
+#
+# {name}
+# {description}
+#
+# (c) {year} {author}
+#
+
+set -euo pipefail
+IFS=$'\\n\\t'
+
+# Colors
+RED='\\033[0;31m'
+GREEN='\\033[0;32m'
+YELLOW='\\033[0;33m'
+CYAN='\\033[0;36m'
+NC='\\033[0m'
+
+# Globals
+SCRIPT_DIR="$(cd "$(dirname "${{BASH_SOURCE[0]}}")" && pwd)"
+VERSION="0.1.0"
+
+# Functions
+log_info() {{
+    echo -e "${{GREEN}}[INFO]${{NC}} $1"
+}}
+
+log_warn() {{
+    echo -e "${{YELLOW}}[WARN]${{NC}} $1"
+}}
+
+log_error() {{
+    echo -e "${{RED}}[ERROR]${{NC}} $1" >&2
+}}
+
+usage() {{
+    cat << EOF
+{name} v$VERSION - {description}
+
+Usage: $(basename "$0") [options]
+
+Options:
+    -h, --help      Show this help message
+    -v, --version   Show version
+    --verbose       Enable verbose output
+
+Examples:
+    $(basename "$0")
+    $(basename "$0") --verbose
+
+EOF
+}}
+
+main() {{
+    log_info "Hello from {name}!"
+}}
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        -v|--version)
+            echo "{name} v$VERSION"
+            exit 0
+            ;;
+        *)
+            log_error "Unknown option: $1"
+            usage
+            exit 1
+            ;;
+    esac
+    shift
+done
+
+main "$@"
+''',
+            'README.md': '''# {name}
+
+{description}
+
+## Usage
+
+```bash
+./{name_lower}.sh --help
+```
+
+## Installation
+
+```bash
+chmod +x {name_lower}.sh
+```
+''',
+            '.gitignore': '''*.log
+*.tmp
+'''
+        },
+        'post_create': lambda p: os.chmod(p / f"{p.name.lower().replace(' ', '-')}.sh", 0o755)
+    },
+
+    # Web templates
+    'html': {
+        'name': 'Static Website',
+        'description': 'Simple HTML/CSS/JS website',
+        'files': {
+            'index.html': '''<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{name}</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <header>
+        <h1>{name}</h1>
+        <p>{description}</p>
+    </header>
+    
+    <main>
+        <section>
+            <h2>Welcome</h2>
+            <p>Hello from {name}!</p>
+        </section>
+    </main>
+    
+    <footer>
+        <p>&copy; {year} {author}</p>
+    </footer>
+    
+    <script src="js/main.js"></script>
+</body>
+</html>
+''',
+            'css/style.css': '''/* {name} Styles */
+:root {{
+    --bg-color: #0d1117;
+    --fg-color: #c9d1d9;
+    --accent: #00ff41;
+}}
+
+* {{
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}}
+
+body {{
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    background: var(--bg-color);
+    color: var(--fg-color);
+    line-height: 1.6;
+    min-height: 100vh;
+}}
+
+header {{
+    text-align: center;
+    padding: 2rem;
+    border-bottom: 1px solid var(--accent);
+}}
+
+header h1 {{
+    color: var(--accent);
+}}
+
+main {{
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 2rem;
+}}
+
+footer {{
+    text-align: center;
+    padding: 1rem;
+    border-top: 1px solid var(--accent);
+}}
+''',
+            'js/main.js': '''// {name} JavaScript
+// {description}
+
+document.addEventListener('DOMContentLoaded', () => {{
+    console.log('Hello from {name}!');
+}});
+''',
+            'README.md': '''# {name}
+
+{description}
+
+## Development
+
+Open `index.html` in a browser or use a local server:
+
+```bash
+python -m http.server 8000
+```
+
+Then visit http://localhost:8000
+''',
+            '.gitignore': '''.DS_Store
+Thumbs.db
+'''
+        }
+    },
+
+    # Security/NullSec template
+    'nullsec-tool': {
+        'name': 'NullSec Security Tool',
+        'description': 'NullSec Linux security tool template',
+        'files': {
+            '{name_lower}': '''#!/usr/bin/env python3
+"""
+{name} - NullSec Security Tool
+{description}
+
+(c) {year} bad-antics development
+"""
+
+import os
+import sys
+import argparse
+from pathlib import Path
+
+# ============================================================================
+# Colors
+# ============================================================================
+
+class C:
+    RST = '\\033[0m'
+    BLD = '\\033[1m'
+    DIM = '\\033[2m'
+    RED = '\\033[0;31m'
+    GREEN = '\\033[0;32m'
+    YELLOW = '\\033[0;33m'
+    CYAN = '\\033[0;36m'
+
+# ============================================================================
+# Configuration
+# ============================================================================
+
+VERSION = '1.0.0'
+CONFIG_DIR = Path.home() / '.config' / '{name_lower}'
+
+# ============================================================================
+# Main Functions
+# ============================================================================
+
+def banner():
+    """Display banner."""
+    print(f"""
+  {{C.GREEN}}╔═══════════════════════════════════════╗{{C.RST}}
+  {{C.GREEN}}║{{C.RST}}    {name}    {{C.GREEN}}║{{C.RST}}
+  {{C.GREEN}}║{{C.RST}}    {{C.DIM}}{description[:35]}{{C.RST}}    {{C.GREEN}}║{{C.RST}}
+  {{C.GREEN}}╚═══════════════════════════════════════╝{{C.RST}}
+    """)
+
+
+def main():
+    """Main entry point."""
+    parser = argparse.ArgumentParser(
+        description='{description}',
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    
+    parser.add_argument('--version', '-V', action='version',
+                       version=f'%(prog)s {{VERSION}}')
+    parser.add_argument('--verbose', '-v', action='store_true',
+                       help='Enable verbose output')
+    
+    args = parser.parse_args()
+    
+    banner()
+    print(f"  {{C.GREEN}}✓{{C.RST}} {name} initialized")
+    
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
+''',
+            'README.md': '''# {name}
+
+{description}
+
+Part of the NullSec Linux toolkit.
+
+## Installation
+
+```bash
+chmod +x {name_lower}
+cp {name_lower} ~/.local/bin/
+```
+
+## Usage
+
+```bash
+{name_lower} --help
+```
+
+## License
+
+(c) {year} bad-antics development
+''',
+            '.gitignore': '''__pycache__/
+*.py[cod]
+.env
+'''
+        },
+        'post_create': lambda p: os.chmod(p / p.name.lower().replace(' ', '-'), 0o755)
+    }
+}
+
+# ============================================================================
+# Project Generator
+# ============================================================================
+
+def create_project(name: str, template_name: str, output_dir: Path, 
+                   author: str = 'NullSec', description: str = ''):
+    """Create a new project from template."""
+    
+    if template_name not in TEMPLATES:
+        print(f"  {C.RED}✗{C.RST} Unknown template: {template_name}")
+        return False
+    
+    template = TEMPLATES[template_name]
+    project_dir = output_dir / name
+    
+    if project_dir.exists():
+        print(f"  {C.YELLOW}!{C.RST} Directory already exists: {project_dir}")
+        overwrite = input(f"  {C.YELLOW}Overwrite?{C.RST} [y/N] ").strip().lower()
+        if overwrite != 'y':
+            return False
+        shutil.rmtree(project_dir)
+    
+    project_dir.mkdir(parents=True)
+    
+    # Template variables
+    year = datetime.now().year
+    name_lower = name.lower().replace(' ', '-').replace('_', '-')
+    
+    vars = {
+        'name': name,
+        'name_lower': name_lower,
+        'description': description or template['description'],
+        'author': author,
+        'year': year,
+    }
+    
+    print(f"\n  {C.CYAN}Creating project:{C.RST} {name}")
+    print(f"  {C.CYAN}Template:{C.RST} {template['name']}")
+    print(f"  {C.CYAN}Location:{C.RST} {project_dir}")
+    
+    # Create files
+    for file_path, content in template['files'].items():
+        # Format file path
+        formatted_path = file_path.format(**vars)
+        full_path = project_dir / formatted_path
+        
+        # Create directory
+        full_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Format content
+        formatted_content = content.format(**vars)
+        
+        # Write file
+        full_path.write_text(formatted_content)
+        print(f"  {C.GREEN}✓{C.RST} Created: {formatted_path}")
+    
+    # Run post-create hook
+    if 'post_create' in template:
+        template['post_create'](project_dir)
+    
+    # Run commands
+    if 'commands' in template:
+        print(f"\n  {C.CYAN}Running setup commands...{C.RST}")
+        for cmd in template['commands']:
+            try:
+                subprocess.run(cmd, shell=True, cwd=project_dir, 
+                             capture_output=True)
+                print(f"  {C.GREEN}✓{C.RST} {cmd}")
+            except Exception as e:
+                print(f"  {C.YELLOW}!{C.RST} {cmd}: {e}")
+    
+    print(f"\n  {C.GREEN}✓{C.RST} Project created successfully!")
+    print(f"\n  {C.BLD}Next steps:{C.RST}")
+    print(f"    cd {project_dir}")
+    
+    return True
+
+
+def list_templates():
+    """List available templates."""
+    print(f"\n  {C.BLD}Available Project Templates:{C.RST}\n")
+    
+    categories = {
+        'Python': ['python', 'python-cli'],
+        'JavaScript/TypeScript': ['node', 'typescript'],
+        'Systems': ['rust', 'go', 'c', 'cpp'],
+        'Web': ['html'],
+        'Scripts': ['bash'],
+        'NullSec': ['nullsec-tool'],
+    }
+    
+    for category, templates in categories.items():
+        print(f"  {C.CYAN}{category}:{C.RST}")
+        for t in templates:
+            if t in TEMPLATES:
+                desc = TEMPLATES[t]['description']
+                print(f"    {C.GREEN}•{C.RST} {t:16} - {desc}")
+        print()
+
+
+def interactive_menu():
+    """Interactive project creation."""
+    print(f"\n  {C.BLD}╔═══════════════════════════════════════╗{C.RST}")
+    print(f"  {C.BLD}║{C.RST}    {C.GREEN}NullSec Project Generator{C.RST}         {C.BLD}║{C.RST}")
+    print(f"  {C.BLD}╚═══════════════════════════════════════╝{C.RST}")
+    
+    while True:
+        print(f"\n  {C.CYAN}[n]{C.RST} New project")
+        print(f"  {C.CYAN}[l]{C.RST} List templates")
+        print(f"  {C.CYAN}[q]{C.RST} Quit")
+        
+        choice = input(f"\n  {C.GREEN}>{C.RST} ").strip().lower()
+        
+        if choice == 'n':
+            list_templates()
+            template = input(f"  {C.GREEN}Template:{C.RST} ").strip()
+            if template not in TEMPLATES:
+                print(f"  {C.RED}✗{C.RST} Unknown template")
+                continue
+            
+            name = input(f"  {C.GREEN}Project name:{C.RST} ").strip()
+            if not name:
+                print(f"  {C.RED}✗{C.RST} Name required")
+                continue
+            
+            desc = input(f"  {C.GREEN}Description (optional):{C.RST} ").strip()
+            author = input(f"  {C.GREEN}Author (default: NullSec):{C.RST} ").strip() or 'NullSec'
+            
+            output = Path.cwd()
+            create_project(name, template, output, author, desc)
+        
+        elif choice == 'l':
+            list_templates()
+        
+        elif choice == 'q':
+            break
+
+
+def main():
+    """Main entry point."""
+    parser = argparse.ArgumentParser(
+        description='NullSec Project - Multi-Language Project Scaffolder',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog='''
+Examples:
+  nullsec-project --new myapp --template python
+  nullsec-project --new myapi --template typescript --author "John Doe"
+  nullsec-project --list
+        '''
+    )
+    
+    parser.add_argument('--new', '-n', metavar='NAME',
+                        help='Create new project with given name')
+    parser.add_argument('--template', '-t', metavar='TEMPLATE',
+                        help='Template to use')
+    parser.add_argument('--description', '-d', metavar='DESC',
+                        help='Project description')
+    parser.add_argument('--author', '-a', metavar='AUTHOR', default='NullSec',
+                        help='Author name')
+    parser.add_argument('--output', '-o', metavar='DIR',
+                        help='Output directory')
+    parser.add_argument('--list', '-l', action='store_true',
+                        help='List available templates')
+    
+    args = parser.parse_args()
+    
+    if args.list:
+        list_templates()
+        return 0
+    
+    if args.new:
+        if not args.template:
+            print(f"  {C.RED}✗{C.RST} Template required. Use --list to see options.")
+            return 1
+        
+        output = Path(args.output) if args.output else Path.cwd()
+        success = create_project(
+            args.new, args.template, output,
+            args.author, args.description or ''
+        )
+        return 0 if success else 1
+    
+    # Interactive mode
+    try:
+        interactive_menu()
+    except KeyboardInterrupt:
+        pass
+    
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
