@@ -1,0 +1,359 @@
+#!/bin/bash
+# ============================================================================
+# NullSec Honeypot - Lightweight Honeypot System
+# ============================================================================
+# Deploy fake services to detect and log intrusion attempts
+# Licensed under NullSec Public License v1.0
+# ============================================================================
+
+VERSION="1.0.0"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+WHITE='\033[1;37m'
+NC='\033[0m'
+
+DATA_DIR="$HOME/.local/share/nullsec/honeypot"
+LOG_DIR="$DATA_DIR/logs"
+PID_DIR="$DATA_DIR/pids"
+CONFIG_DIR="$HOME/.config/nullsec/honeypot"
+
+mkdir -p "$LOG_DIR" "$PID_DIR" "$CONFIG_DIR"
+
+info() { echo -e "${CYAN}[*]${NC} $1"; }
+success() { echo -e "${GREEN}[✓]${NC} $1"; }
+warn() { echo -e "${YELLOW}[!]${NC} $1"; }
+error() { echo -e "${RED}[✗]${NC} $1"; }
+
+# Log honeypot event
+log_event() {
+    local service="$1"
+    local ip="$2"
+    local data="$3"
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    
+    echo "[$timestamp] [$service] $ip: $data" >> "$LOG_DIR/honeypot.log"
+    echo "[$timestamp] $ip" >> "$LOG_DIR/${service}_ips.log"
+}
+
+# Alert on intrusion
+alert() {
+    local service="$1"
+    local ip="$2"
+    local data="$3"
+    
+    echo -e "\n${RED}╔════════════════════════════════════════╗${NC}"
+    echo -e "${RED}║  🚨 HONEYPOT ALERT - INTRUSION DETECTED ║${NC}"
+    echo -e "${RED}╚════════════════════════════════════════╝${NC}"
+    echo -e "  Service: ${WHITE}$service${NC}"
+    echo -e "  Source:  ${YELLOW}$ip${NC}"
+    echo -e "  Time:    $(date '+%Y-%m-%d %H:%M:%S')"
+    echo -e "  Data:    $data"
+    echo ""
+    
+    # Desktop notification if available
+    notify-send -u critical "Honeypot Alert" "Intrusion from $ip on $service" 2>/dev/null
+    
+    log_event "$service" "$ip" "$data"
+}
+
+# Fake SSH honeypot
+honeypot_ssh() {
+    local port="${1:-2222}"
+    local pid_file="$PID_DIR/ssh.pid"
+    
+    info "Starting SSH honeypot on port $port..."
+    
+    # Simple SSH banner grabber
+    while true; do
+        nc -lvnp "$port" 2>/dev/null | while read -r line; do
+            local ip=$(echo "$line" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+            [[ -n "$ip" ]] && alert "SSH" "$ip" "Connection attempt"
+            
+            # Send fake SSH banner
+            echo "SSH-2.0-OpenSSH_8.9p1 Ubuntu-3ubuntu0.1"
+            sleep 2
+        done
+    done &
+    
+    echo $! > "$pid_file"
+    success "SSH honeypot running (PID: $(cat $pid_file))"
+}
+
+# Fake HTTP honeypot
+honeypot_http() {
+    local port="${1:-8080}"
+    local pid_file="$PID_DIR/http.pid"
+    
+    info "Starting HTTP honeypot on port $port..."
+    
+    local response="HTTP/1.1 200 OK\r\nServer: Apache/2.4.52\r\nContent-Type: text/html\r\n\r\n<html><head><title>Login</title></head><body><h1>Admin Panel</h1><form method='POST' action='/login'><input name='user'><input name='pass' type='password'><button>Login</button></form></body></html>"
+    
+    while true; do
+        echo -e "$response" | nc -lvnp "$port" 2>&1 | while read -r line; do
+            local ip=$(echo "$line" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+            if [[ -n "$ip" ]]; then
+                alert "HTTP" "$ip" "$line"
+            elif [[ "$line" == *"POST"* ]] || [[ "$line" == *"GET"* ]]; then
+                log_event "HTTP" "unknown" "$line"
+            fi
+        done
+    done &
+    
+    echo $! > "$pid_file"
+    success "HTTP honeypot running (PID: $(cat $pid_file))"
+}
+
+# Fake FTP honeypot
+honeypot_ftp() {
+    local port="${1:-2121}"
+    local pid_file="$PID_DIR/ftp.pid"
+    
+    info "Starting FTP honeypot on port $port..."
+    
+    while true; do
+        {
+            echo "220 ProFTPD 1.3.5 Server ready."
+            while read -r cmd; do
+                local upper_cmd=$(echo "$cmd" | tr '[:lower:]' '[:upper:]')
+                case "$upper_cmd" in
+                    USER*)
+                        echo "331 Password required"
+                        log_event "FTP" "session" "User: ${cmd#* }"
+                        ;;
+                    PASS*)
+                        echo "530 Login incorrect"
+                        log_event "FTP" "session" "Password attempt"
+                        ;;
+                    QUIT*) echo "221 Goodbye"; break ;;
+                    *) echo "500 Unknown command" ;;
+                esac
+            done
+        } | nc -lvnp "$port" 2>&1 | while read -r line; do
+            local ip=$(echo "$line" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+            [[ -n "$ip" ]] && alert "FTP" "$ip" "Connection"
+        done
+    done &
+    
+    echo $! > "$pid_file"
+    success "FTP honeypot running (PID: $(cat $pid_file))"
+}
+
+# Fake Telnet honeypot
+honeypot_telnet() {
+    local port="${1:-2323}"
+    local pid_file="$PID_DIR/telnet.pid"
+    
+    info "Starting Telnet honeypot on port $port..."
+    
+    while true; do
+        {
+            echo "Ubuntu 22.04 LTS"
+            echo -n "login: "
+            read -r user
+            echo -n "Password: "
+            read -rs pass
+            echo ""
+            log_event "TELNET" "session" "Creds: $user:$pass"
+            echo "Login incorrect"
+            sleep 2
+        } | nc -lvnp "$port" 2>&1 | while read -r line; do
+            local ip=$(echo "$line" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+            [[ -n "$ip" ]] && alert "TELNET" "$ip" "Connection"
+        done
+    done &
+    
+    echo $! > "$pid_file"
+    success "Telnet honeypot running (PID: $(cat $pid_file))"
+}
+
+# Fake MySQL honeypot
+honeypot_mysql() {
+    local port="${1:-3307}"
+    local pid_file="$PID_DIR/mysql.pid"
+    
+    info "Starting MySQL honeypot on port $port..."
+    
+    while true; do
+        nc -lvnp "$port" 2>&1 | while read -r line; do
+            local ip=$(echo "$line" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+            [[ -n "$ip" ]] && alert "MySQL" "$ip" "Connection attempt"
+        done
+        sleep 1
+    done &
+    
+    echo $! > "$pid_file"
+    success "MySQL honeypot running (PID: $(cat $pid_file))"
+}
+
+# Start all honeypots
+start_all() {
+    info "Starting all honeypots..."
+    honeypot_ssh 2222
+    honeypot_http 8080
+    honeypot_ftp 2121
+    honeypot_telnet 2323
+    honeypot_mysql 3307
+    echo ""
+    success "All honeypots started"
+    status
+}
+
+# Stop honeypot
+stop_honeypot() {
+    local service="$1"
+    local pid_file="$PID_DIR/${service}.pid"
+    
+    if [[ -f "$pid_file" ]]; then
+        local pid=$(cat "$pid_file")
+        kill "$pid" 2>/dev/null
+        pkill -P "$pid" 2>/dev/null
+        rm -f "$pid_file"
+        success "Stopped $service honeypot"
+    else
+        warn "$service honeypot not running"
+    fi
+}
+
+# Stop all honeypots
+stop_all() {
+    info "Stopping all honeypots..."
+    for pid_file in "$PID_DIR"/*.pid; do
+        [[ -f "$pid_file" ]] || continue
+        local service=$(basename "$pid_file" .pid)
+        stop_honeypot "$service"
+    done
+    success "All honeypots stopped"
+}
+
+# Status
+status() {
+    echo -e "\n${CYAN}${BOLD}═══ Honeypot Status ═══${NC}\n"
+    
+    local running=0
+    for service in ssh http ftp telnet mysql; do
+        local pid_file="$PID_DIR/${service}.pid"
+        if [[ -f "$pid_file" ]] && kill -0 "$(cat $pid_file)" 2>/dev/null; then
+            echo -e "  ${service^^}: ${GREEN}● Running${NC} (PID: $(cat $pid_file))"
+            ((running++))
+        else
+            echo -e "  ${service^^}: ${RED}○ Stopped${NC}"
+            rm -f "$pid_file" 2>/dev/null
+        fi
+    done
+    
+    echo ""
+    echo -e "  Active: $running honeypots"
+    echo -e "  Logs:   $LOG_DIR"
+}
+
+# View logs
+view_logs() {
+    local service="${1:-all}"
+    
+    if [[ "$service" == "all" ]]; then
+        [[ -f "$LOG_DIR/honeypot.log" ]] && tail -50 "$LOG_DIR/honeypot.log" || warn "No logs yet"
+    else
+        local log_file="$LOG_DIR/${service}_ips.log"
+        [[ -f "$log_file" ]] && cat "$log_file" || warn "No logs for $service"
+    fi
+}
+
+# Stats
+stats() {
+    echo -e "\n${CYAN}${BOLD}═══ Honeypot Statistics ═══${NC}\n"
+    
+    if [[ ! -f "$LOG_DIR/honeypot.log" ]]; then
+        warn "No events logged yet"
+        return
+    fi
+    
+    local total=$(wc -l < "$LOG_DIR/honeypot.log")
+    echo -e "  Total events: ${WHITE}$total${NC}"
+    echo ""
+    
+    echo -e "  ${WHITE}By Service:${NC}"
+    for service in SSH HTTP FTP TELNET MySQL; do
+        local count=$(grep -c "\[$service\]" "$LOG_DIR/honeypot.log" 2>/dev/null || echo "0")
+        echo -e "    $service: $count"
+    done
+    
+    echo ""
+    echo -e "  ${WHITE}Top Source IPs:${NC}"
+    grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' "$LOG_DIR/honeypot.log" 2>/dev/null | \
+        sort | uniq -c | sort -rn | head -10 | while read -r count ip; do
+            echo -e "    $count - $ip"
+        done
+}
+
+# Help
+show_help() {
+    cat << 'HELP'
+NullSec Honeypot - Lightweight Honeypot System
+
+USAGE:
+    nullsec-honeypot <command> [options]
+
+COMMANDS:
+    start [service] [port]    Start honeypot (ssh/http/ftp/telnet/mysql)
+    start-all                 Start all honeypots
+    stop [service]            Stop honeypot
+    stop-all                  Stop all honeypots
+    status                    Show honeypot status
+    logs [service]            View logs
+    stats                     View statistics
+
+DEFAULT PORTS:
+    SSH:    2222
+    HTTP:   8080
+    FTP:    2121
+    Telnet: 2323
+    MySQL:  3307
+
+EXAMPLES:
+    nullsec-honeypot start-all
+    nullsec-honeypot start ssh 22222
+    nullsec-honeypot stop http
+    nullsec-honeypot logs
+    nullsec-honeypot stats
+
+NOTES:
+    - Logs stored in ~/.local/share/nullsec/honeypot/logs/
+    - Desktop notifications on alerts (if supported)
+    - Use non-privileged ports (>1024) without root
+
+LICENSE:
+    NullSec Public License v1.0
+HELP
+}
+
+# Main
+case "$1" in
+    -h|--help|help|"") show_help ;;
+    start)
+        shift
+        case "$1" in
+            ssh) shift; honeypot_ssh "$@" ;;
+            http) shift; honeypot_http "$@" ;;
+            ftp) shift; honeypot_ftp "$@" ;;
+            telnet) shift; honeypot_telnet "$@" ;;
+            mysql) shift; honeypot_mysql "$@" ;;
+            *) error "Unknown service: $1" ;;
+        esac
+        ;;
+    start-all|all) start_all ;;
+    stop)
+        shift
+        [[ -z "$1" ]] && { stop_all; exit; }
+        stop_honeypot "$1"
+        ;;
+    stop-all) stop_all ;;
+    status|st) status ;;
+    logs|log) shift; view_logs "$@" ;;
+    stats|statistics) stats ;;
+    *) error "Unknown command: $1"; show_help; exit 1 ;;
+esac

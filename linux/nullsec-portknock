@@ -1,0 +1,322 @@
+#!/bin/bash
+# ============================================================================
+# NullSec Port Knock - Port Knocking Client & Server
+# ============================================================================
+# Secure port knocking implementation for hidden service access
+# Licensed under NullSec Public License v1.0
+# ============================================================================
+
+VERSION="1.0.0"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+WHITE='\033[1;37m'
+NC='\033[0m'
+
+CONFIG_DIR="$HOME/.config/nullsec/portknock"
+SEQUENCES_FILE="$CONFIG_DIR/sequences.conf"
+LOG_FILE="$HOME/.local/share/nullsec/portknock.log"
+
+mkdir -p "$CONFIG_DIR" "$(dirname "$LOG_FILE")"
+
+info() { echo -e "${CYAN}[*]${NC} $1"; }
+success() { echo -e "${GREEN}[✓]${NC} $1"; }
+warn() { echo -e "${YELLOW}[!]${NC} $1"; }
+error() { echo -e "${RED}[✗]${NC} $1"; }
+
+# Log with timestamp
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_FILE"
+}
+
+# Generate random port sequence
+generate_sequence() {
+    local length="${1:-4}"
+    local ports=()
+    
+    for ((i=0; i<length; i++)); do
+        ports+=($((RANDOM % 64000 + 1024)))
+    done
+    
+    echo "${ports[*]}"
+}
+
+# Knock on ports (client)
+knock() {
+    local host="$1"
+    shift
+    local ports=("$@")
+    
+    [[ -z "$host" ]] && { error "Host required"; return 1; }
+    [[ ${#ports[@]} -eq 0 ]] && { error "Port sequence required"; return 1; }
+    
+    info "Knocking on $host with sequence: ${ports[*]}"
+    
+    for port in "${ports[@]}"; do
+        # Send SYN packet using various methods
+        if command -v nmap &>/dev/null; then
+            nmap -Pn --max-retries 0 -p "$port" "$host" &>/dev/null
+        elif command -v nc &>/dev/null; then
+            timeout 0.5 nc -z "$host" "$port" 2>/dev/null
+        else
+            # Fallback: use /dev/tcp
+            timeout 0.5 bash -c "echo >/dev/tcp/$host/$port" 2>/dev/null
+        fi
+        
+        echo -e "  ${GREEN}→${NC} Port $port"
+        sleep 0.3
+    done
+    
+    success "Knock sequence completed"
+    log "KNOCK: $host - ${ports[*]}"
+}
+
+# Knock using saved profile
+knock_profile() {
+    local profile="$1"
+    
+    [[ ! -f "$SEQUENCES_FILE" ]] && { error "No saved sequences"; return 1; }
+    
+    local line=$(grep "^$profile:" "$SEQUENCES_FILE")
+    [[ -z "$line" ]] && { error "Profile '$profile' not found"; return 1; }
+    
+    local host=$(echo "$line" | cut -d: -f2)
+    local ports=$(echo "$line" | cut -d: -f3)
+    
+    knock "$host" $ports
+}
+
+# Save knock sequence
+save_sequence() {
+    local name="$1"
+    local host="$2"
+    shift 2
+    local ports="$*"
+    
+    [[ -z "$name" || -z "$host" || -z "$ports" ]] && {
+        error "Usage: save <name> <host> <ports...>"
+        return 1
+    }
+    
+    # Remove existing
+    sed -i "/^$name:/d" "$SEQUENCES_FILE" 2>/dev/null
+    
+    echo "$name:$host:$ports" >> "$SEQUENCES_FILE"
+    success "Saved sequence '$name'"
+}
+
+# List saved sequences
+list_sequences() {
+    if [[ ! -f "$SEQUENCES_FILE" ]] || [[ ! -s "$SEQUENCES_FILE" ]]; then
+        warn "No saved sequences"
+        return
+    fi
+    
+    echo -e "\n${CYAN}${BOLD}Saved Knock Sequences:${NC}\n"
+    
+    while IFS=: read -r name host ports; do
+        echo -e "  ${WHITE}$name${NC}"
+        echo -e "    Host:  $host"
+        echo -e "    Ports: $ports"
+        echo ""
+    done < "$SEQUENCES_FILE"
+}
+
+# Delete sequence
+delete_sequence() {
+    local name="$1"
+    
+    [[ -z "$name" ]] && { error "Profile name required"; return 1; }
+    
+    if grep -q "^$name:" "$SEQUENCES_FILE" 2>/dev/null; then
+        sed -i "/^$name:/d" "$SEQUENCES_FILE"
+        success "Deleted sequence '$name'"
+    else
+        error "Profile '$name' not found"
+    fi
+}
+
+# Setup server-side port knocking with iptables
+setup_server() {
+    local service_port="${1:-22}"
+    shift
+    local knock_ports=("$@")
+    
+    [[ ${#knock_ports[@]} -lt 2 ]] && {
+        error "At least 2 knock ports required"
+        echo "Usage: nullsec-portknock server <service_port> <knock1> <knock2> [knock3...]"
+        return 1
+    }
+    
+    warn "This will modify iptables rules. Run as root."
+    echo -n "Continue? [y/N]: "
+    read -r confirm
+    [[ "$confirm" != "y" && "$confirm" != "Y" ]] && return
+    
+    local script="/tmp/portknock-setup.sh"
+    local num_knocks=${#knock_ports[@]}
+    
+    cat > "$script" << 'SCRIPT_HEAD'
+#!/bin/bash
+# NullSec Port Knock Server Setup
+
+# Flush existing knock chains
+for i in $(seq 1 10); do
+    iptables -F KNOCK$i 2>/dev/null
+    iptables -X KNOCK$i 2>/dev/null
+done
+iptables -F GATE 2>/dev/null
+iptables -X GATE 2>/dev/null
+
+SCRIPT_HEAD
+
+    # Build iptables rules
+    echo "SERVICE_PORT=$service_port" >> "$script"
+    echo "KNOCK_PORTS=(${knock_ports[*]})" >> "$script"
+    echo "" >> "$script"
+    
+    cat >> "$script" << 'SCRIPT_BODY'
+# Create chains
+for i in $(seq 1 ${#KNOCK_PORTS[@]}); do
+    iptables -N KNOCK$i
+done
+iptables -N GATE
+
+# First knock
+iptables -A KNOCK1 -m recent --name knock1 --set -j DROP
+
+# Middle knocks
+for ((i=2; i<=${#KNOCK_PORTS[@]}; i++)); do
+    prev=$((i-1))
+    iptables -A KNOCK$i -m recent --name knock$prev --remove
+    iptables -A KNOCK$i -m recent --name knock$i --set -j DROP
+done
+
+# Final gate - allow access
+iptables -A GATE -m recent --name knock${#KNOCK_PORTS[@]} --remove
+iptables -A GATE -p tcp --dport $SERVICE_PORT -j ACCEPT
+
+# Wire up INPUT chain
+for ((i=1; i<=${#KNOCK_PORTS[@]}; i++)); do
+    if [[ $i -eq 1 ]]; then
+        iptables -A INPUT -p tcp --dport ${KNOCK_PORTS[$((i-1))]} -m recent ! --name knock$i -j KNOCK$i
+    else
+        prev=$((i-1))
+        iptables -A INPUT -p tcp --dport ${KNOCK_PORTS[$((i-1))]} -m recent --name knock$prev -j KNOCK$i
+    fi
+done
+
+# Check gate
+iptables -A INPUT -p tcp --dport $SERVICE_PORT -m recent --name knock${#KNOCK_PORTS[@]} -j GATE
+
+# Default drop for service port
+iptables -A INPUT -p tcp --dport $SERVICE_PORT -j DROP
+
+echo "Port knocking configured!"
+echo "Service port $SERVICE_PORT hidden behind sequence: ${KNOCK_PORTS[*]}"
+SCRIPT_BODY
+
+    chmod +x "$script"
+    info "Generated setup script: $script"
+    echo ""
+    echo "Review and run with: sudo $script"
+}
+
+# Monitor knock attempts (server)
+monitor() {
+    info "Monitoring knock attempts (Ctrl+C to stop)..."
+    
+    if [[ -f /proc/net/xt_recent/knock1 ]]; then
+        watch -n 1 'echo "=== Knock Stage 1 ===" && cat /proc/net/xt_recent/knock1 2>/dev/null; 
+                    echo "=== Knock Stage 2 ===" && cat /proc/net/xt_recent/knock2 2>/dev/null;
+                    echo "=== Knock Stage 3 ===" && cat /proc/net/xt_recent/knock3 2>/dev/null'
+    else
+        # Monitor via iptables logging
+        sudo iptables -I INPUT -j LOG --log-prefix "KNOCK: " --log-level 4 2>/dev/null
+        tail -f /var/log/syslog 2>/dev/null | grep --line-buffered "KNOCK:"
+    fi
+}
+
+# Test knock sequence
+test_knock() {
+    local host="${1:-localhost}"
+    
+    info "Testing port knock connectivity to $host..."
+    
+    # Test with common ports
+    local test_ports=(7000 8000 9000)
+    
+    for port in "${test_ports[@]}"; do
+        if timeout 1 bash -c "echo >/dev/tcp/$host/$port" 2>/dev/null; then
+            echo -e "  Port $port: ${GREEN}reachable${NC}"
+        else
+            echo -e "  Port $port: ${YELLOW}filtered/closed${NC}"
+        fi
+    done
+    
+    success "Test complete"
+}
+
+# Help
+show_help() {
+    cat << 'HELP'
+NullSec Port Knock - Port Knocking Client & Server
+
+USAGE:
+    nullsec-portknock <command> [options]
+
+CLIENT COMMANDS:
+    knock <host> <p1> <p2> ...    Knock on ports in sequence
+    use <profile>                  Use saved knock sequence
+    save <name> <host> <ports>     Save a knock sequence
+    list                           List saved sequences
+    delete <name>                  Delete saved sequence
+    generate [length]              Generate random sequence
+
+SERVER COMMANDS:
+    server <port> <k1> <k2> ...   Setup server-side knocking
+    monitor                        Monitor knock attempts
+    test [host]                    Test knock connectivity
+
+EXAMPLES:
+    # Client: knock on server
+    nullsec-portknock knock 192.168.1.1 7000 8000 9000
+    
+    # Save and use profile
+    nullsec-portknock save myserver 192.168.1.1 7000 8000 9000
+    nullsec-portknock use myserver
+    
+    # Server: hide SSH behind knock sequence
+    nullsec-portknock server 22 7000 8000 9000
+    
+    # Generate random sequence
+    nullsec-portknock generate 5
+
+NOTES:
+    - Server setup requires root/sudo
+    - Uses iptables recent module
+    - Timing between knocks: 300ms default
+
+LICENSE:
+    NullSec Public License v1.0
+HELP
+}
+
+# Main
+case "$1" in
+    -h|--help|help|"") show_help ;;
+    knock|k) shift; knock "$@" ;;
+    use|profile) shift; knock_profile "$@" ;;
+    save|add) shift; save_sequence "$@" ;;
+    list|ls) list_sequences ;;
+    delete|rm|del) shift; delete_sequence "$@" ;;
+    generate|gen) shift; generate_sequence "$@" ;;
+    server|setup) shift; setup_server "$@" ;;
+    monitor|watch) monitor ;;
+    test) shift; test_knock "$@" ;;
+    *) error "Unknown command: $1"; show_help; exit 1 ;;
+esac

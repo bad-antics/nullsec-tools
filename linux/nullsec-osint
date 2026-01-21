@@ -1,0 +1,395 @@
+#!/bin/bash
+# ============================================================================
+# NullSec OSINT - Open Source Intelligence Gathering
+# ============================================================================
+# Automated OSINT collection from public sources
+# Licensed under NullSec Public License v1.0
+# ============================================================================
+
+VERSION="1.0.0"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+PURPLE='\033[0;35m'
+WHITE='\033[1;37m'
+DIM='\033[2m'
+NC='\033[0m'
+
+OUTPUT_DIR="$HOME/.local/share/nullsec/osint"
+mkdir -p "$OUTPUT_DIR"
+
+info() { echo -e "${CYAN}[*]${NC} $1"; }
+success() { echo -e "${GREEN}[✓]${NC} $1"; }
+warn() { echo -e "${YELLOW}[!]${NC} $1"; }
+error() { echo -e "${RED}[✗]${NC} $1"; }
+header() { echo -e "\n${PURPLE}${BOLD}═══ $1 ═══${NC}\n"; }
+
+# Domain OSINT
+osint_domain() {
+    local domain="$1"
+    [[ -z "$domain" ]] && { error "Domain required"; return 1; }
+    
+    local output="$OUTPUT_DIR/domain-$domain-$(date +%Y%m%d).txt"
+    
+    header "Domain OSINT: $domain"
+    
+    {
+        echo "Domain OSINT Report: $domain"
+        echo "Generated: $(date)"
+        echo "========================================"
+        echo ""
+        
+        echo "=== WHOIS Information ==="
+        whois "$domain" 2>/dev/null | head -50
+        echo ""
+        
+        echo "=== DNS Records ==="
+        echo "A Records:"
+        dig +short A "$domain" 2>/dev/null
+        echo ""
+        echo "MX Records:"
+        dig +short MX "$domain" 2>/dev/null
+        echo ""
+        echo "NS Records:"
+        dig +short NS "$domain" 2>/dev/null
+        echo ""
+        echo "TXT Records:"
+        dig +short TXT "$domain" 2>/dev/null
+        echo ""
+        
+        echo "=== Subdomains (crt.sh) ==="
+        curl -s "https://crt.sh/?q=%25.$domain&output=json" 2>/dev/null | \
+            grep -oE '"name_value":"[^"]+' | cut -d'"' -f4 | sort -u | head -30
+        echo ""
+        
+        echo "=== HTTP Headers ==="
+        curl -sI "https://$domain" 2>/dev/null | head -20
+        echo ""
+        
+        echo "=== SSL Certificate ==="
+        echo | openssl s_client -connect "$domain:443" 2>/dev/null | \
+            openssl x509 -noout -subject -issuer -dates 2>/dev/null
+        echo ""
+        
+        echo "=== robots.txt ==="
+        curl -s "https://$domain/robots.txt" 2>/dev/null | head -30
+        echo ""
+        
+    } | tee "$output"
+    
+    success "Report saved to $output"
+}
+
+# IP OSINT
+osint_ip() {
+    local ip="$1"
+    [[ -z "$ip" ]] && { error "IP address required"; return 1; }
+    
+    header "IP OSINT: $ip"
+    
+    echo -e "${WHITE}GeoIP Location:${NC}"
+    curl -s "http://ip-api.com/json/$ip" 2>/dev/null | python3 -m json.tool 2>/dev/null || \
+    curl -s "http://ip-api.com/json/$ip" 2>/dev/null
+    echo ""
+    
+    echo -e "${WHITE}Reverse DNS:${NC}"
+    dig +short -x "$ip" 2>/dev/null || host "$ip" 2>/dev/null
+    echo ""
+    
+    echo -e "${WHITE}WHOIS:${NC}"
+    whois "$ip" 2>/dev/null | grep -E "^(NetName|OrgName|Country|Organization|descr|country):" | head -10
+    echo ""
+    
+    echo -e "${WHITE}Shodan (if API key set):${NC}"
+    if [[ -n "$SHODAN_API_KEY" ]]; then
+        curl -s "https://api.shodan.io/shodan/host/$ip?key=$SHODAN_API_KEY" 2>/dev/null | \
+            python3 -m json.tool 2>/dev/null | head -50
+    else
+        echo "  Set SHODAN_API_KEY for Shodan lookups"
+    fi
+}
+
+# Email OSINT
+osint_email() {
+    local email="$1"
+    [[ -z "$email" ]] && { error "Email required"; return 1; }
+    
+    local domain=$(echo "$email" | cut -d@ -f2)
+    
+    header "Email OSINT: $email"
+    
+    echo -e "${WHITE}Email Domain Analysis:${NC}"
+    echo "  Domain: $domain"
+    echo ""
+    
+    echo -e "${WHITE}MX Records:${NC}"
+    dig +short MX "$domain" 2>/dev/null
+    echo ""
+    
+    echo -e "${WHITE}SPF Record:${NC}"
+    dig +short TXT "$domain" 2>/dev/null | grep -i spf
+    echo ""
+    
+    echo -e "${WHITE}DMARC Record:${NC}"
+    dig +short TXT "_dmarc.$domain" 2>/dev/null
+    echo ""
+    
+    echo -e "${WHITE}Have I Been Pwned (manual check):${NC}"
+    echo "  https://haveibeenpwned.com/account/$email"
+    echo ""
+    
+    echo -e "${WHITE}Gravatar:${NC}"
+    local hash=$(echo -n "$email" | md5sum | cut -d' ' -f1)
+    echo "  https://www.gravatar.com/avatar/$hash"
+}
+
+# Username OSINT
+osint_username() {
+    local username="$1"
+    [[ -z "$username" ]] && { error "Username required"; return 1; }
+    
+    header "Username OSINT: $username"
+    
+    echo -e "${WHITE}Checking social media presence...${NC}\n"
+    
+    local sites=(
+        "https://github.com/$username"
+        "https://twitter.com/$username"
+        "https://instagram.com/$username"
+        "https://facebook.com/$username"
+        "https://linkedin.com/in/$username"
+        "https://reddit.com/user/$username"
+        "https://pinterest.com/$username"
+        "https://youtube.com/@$username"
+        "https://tiktok.com/@$username"
+        "https://medium.com/@$username"
+        "https://dev.to/$username"
+        "https://keybase.io/$username"
+    )
+    
+    for site in "${sites[@]}"; do
+        local status=$(curl -s -o /dev/null -w "%{http_code}" "$site" 2>/dev/null)
+        local name=$(echo "$site" | sed 's|https://||' | cut -d'/' -f1)
+        
+        if [[ "$status" == "200" ]]; then
+            echo -e "  ${GREEN}✓${NC} $name: $site"
+        elif [[ "$status" == "404" ]]; then
+            echo -e "  ${DIM}✗ $name: Not found${NC}"
+        else
+            echo -e "  ${YELLOW}? $name: Status $status${NC}"
+        fi
+    done
+}
+
+# Phone number OSINT
+osint_phone() {
+    local phone="$1"
+    [[ -z "$phone" ]] && { error "Phone number required"; return 1; }
+    
+    # Clean phone number
+    phone=$(echo "$phone" | tr -d ' ()-+')
+    
+    header "Phone OSINT: $phone"
+    
+    echo -e "${WHITE}Format Analysis:${NC}"
+    echo "  Cleaned: $phone"
+    echo "  Length: ${#phone} digits"
+    
+    # Detect country code
+    if [[ ${phone:0:1} == "1" && ${#phone} == 11 ]]; then
+        echo "  Country: USA/Canada (+1)"
+    elif [[ ${phone:0:2} == "44" ]]; then
+        echo "  Country: UK (+44)"
+    elif [[ ${phone:0:2} == "33" ]]; then
+        echo "  Country: France (+33)"
+    elif [[ ${phone:0:2} == "49" ]]; then
+        echo "  Country: Germany (+49)"
+    fi
+    
+    echo ""
+    echo -e "${WHITE}Lookup Resources:${NC}"
+    echo "  Truecaller: https://www.truecaller.com/search/$phone"
+    echo "  NumLookup: https://www.numlookup.com/"
+    echo "  Sync.me: https://sync.me/"
+}
+
+# Company OSINT
+osint_company() {
+    local company="$1"
+    [[ -z "$company" ]] && { error "Company name required"; return 1; }
+    
+    header "Company OSINT: $company"
+    
+    local encoded=$(echo "$company" | sed 's/ /+/g')
+    
+    echo -e "${WHITE}Search Resources:${NC}"
+    echo "  LinkedIn: https://www.linkedin.com/company/$encoded"
+    echo "  Crunchbase: https://www.crunchbase.com/organization/$encoded"
+    echo "  OpenCorporates: https://opencorporates.com/companies?q=$encoded"
+    echo "  SEC Edgar: https://www.sec.gov/cgi-bin/browse-edgar?company=$encoded"
+    echo ""
+    
+    # Try to find domain
+    local domain=$(echo "$company" | tr '[:upper:]' '[:lower:]' | tr ' ' '' | head -c 20)
+    
+    echo -e "${WHITE}Possible Domains:${NC}"
+    for tld in com net org io co; do
+        local test_domain="$domain.$tld"
+        if dig +short "$test_domain" &>/dev/null; then
+            local ip=$(dig +short "$test_domain" 2>/dev/null | head -1)
+            [[ -n "$ip" ]] && echo "  $test_domain -> $ip"
+        fi
+    done
+}
+
+# Image metadata
+osint_image() {
+    local image="$1"
+    [[ ! -f "$image" ]] && { error "Image file required"; return 1; }
+    
+    header "Image OSINT: $image"
+    
+    if command -v exiftool &>/dev/null; then
+        echo -e "${WHITE}EXIF Metadata:${NC}"
+        exiftool "$image" 2>/dev/null
+    elif command -v identify &>/dev/null; then
+        echo -e "${WHITE}Image Info:${NC}"
+        identify -verbose "$image" 2>/dev/null | head -50
+    else
+        echo -e "${WHITE}Basic Info:${NC}"
+        file "$image"
+        ls -la "$image"
+    fi
+    
+    echo ""
+    echo -e "${WHITE}Reverse Image Search:${NC}"
+    echo "  Google: https://images.google.com/"
+    echo "  TinEye: https://tineye.com/"
+    echo "  Yandex: https://yandex.com/images/"
+}
+
+# Google dorks
+google_dorks() {
+    local target="$1"
+    [[ -z "$target" ]] && { error "Target required"; return 1; }
+    
+    header "Google Dorks for: $target"
+    
+    echo -e "${WHITE}File Discovery:${NC}"
+    echo "  site:$target filetype:pdf"
+    echo "  site:$target filetype:doc OR filetype:docx"
+    echo "  site:$target filetype:xls OR filetype:xlsx"
+    echo "  site:$target filetype:sql"
+    echo "  site:$target filetype:log"
+    echo "  site:$target filetype:bak"
+    echo ""
+    
+    echo -e "${WHITE}Sensitive Info:${NC}"
+    echo "  site:$target inurl:admin"
+    echo "  site:$target inurl:login"
+    echo "  site:$target inurl:config"
+    echo "  site:$target \"password\" OR \"passwd\""
+    echo "  site:$target \"api_key\" OR \"apikey\""
+    echo "  site:$target intitle:\"index of\""
+    echo ""
+    
+    echo -e "${WHITE}Exposed Pages:${NC}"
+    echo "  site:$target inurl:php?id="
+    echo "  site:$target inurl:wp-content"
+    echo "  site:$target inurl:wp-admin"
+    echo "  site:$target \"powered by\""
+    echo ""
+    
+    echo -e "${WHITE}Subdomains:${NC}"
+    echo "  site:*.$target"
+}
+
+# Full report
+full_report() {
+    local target="$1"
+    [[ -z "$target" ]] && { error "Target required"; return 1; }
+    
+    local output="$OUTPUT_DIR/full-report-$(date +%Y%m%d-%H%M%S).txt"
+    
+    info "Generating full OSINT report for $target..."
+    
+    {
+        echo "NULLSEC OSINT FULL REPORT"
+        echo "========================="
+        echo "Target: $target"
+        echo "Date: $(date)"
+        echo ""
+        
+        # Detect target type and run appropriate modules
+        if [[ "$target" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            osint_ip "$target"
+        elif [[ "$target" =~ @ ]]; then
+            osint_email "$target"
+        elif [[ "$target" =~ \. ]]; then
+            osint_domain "$target"
+            google_dorks "$target"
+        else
+            osint_username "$target"
+        fi
+        
+    } | tee "$output"
+    
+    success "Full report saved to $output"
+}
+
+# Help
+show_help() {
+    cat << 'HELP'
+NullSec OSINT - Open Source Intelligence Gathering
+
+USAGE:
+    nullsec-osint <command> <target>
+
+COMMANDS:
+    domain <domain>       Domain reconnaissance
+    ip <ip>               IP address lookup
+    email <email>         Email investigation
+    username <user>       Username search across platforms
+    phone <number>        Phone number lookup
+    company <name>        Company information
+    image <file>          Image metadata extraction
+    dorks <domain>        Google dork suggestions
+    full <target>         Full automated report
+
+EXAMPLES:
+    nullsec-osint domain example.com
+    nullsec-osint ip 8.8.8.8
+    nullsec-osint email user@example.com
+    nullsec-osint username johndoe
+    nullsec-osint dorks target.com
+    nullsec-osint full example.com
+
+OUTPUT:
+    Reports saved to: ~/.local/share/nullsec/osint/
+
+ENVIRONMENT:
+    SHODAN_API_KEY    For Shodan integration
+
+LICENSE:
+    NullSec Public License v1.0
+HELP
+}
+
+# Main
+case "$1" in
+    -h|--help|help|"") show_help ;;
+    domain|dom|d) shift; osint_domain "$@" ;;
+    ip|i) shift; osint_ip "$@" ;;
+    email|mail|e) shift; osint_email "$@" ;;
+    username|user|u) shift; osint_username "$@" ;;
+    phone|tel|p) shift; osint_phone "$@" ;;
+    company|org|c) shift; osint_company "$@" ;;
+    image|img|exif) shift; osint_image "$@" ;;
+    dorks|dork|google) shift; google_dorks "$@" ;;
+    full|report|all) shift; full_report "$@" ;;
+    *) error "Unknown command: $1"; show_help; exit 1 ;;
+esac

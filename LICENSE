@@ -1,90 +1,107 @@
-NullSec Linux License Agreement
-Version 1.0 - January 2026
+# NullSec Public License v1.0
 
-Copyright (c) 2026 NullSec Linux Project
-All Rights Reserved.
+Copyright (c) 2025-2026 bad-antics development / NullSec Project
 
-================================================================================
-                         NULLSEC LINUX PUBLIC LICENSE
-================================================================================
+## Preamble
 
-1. DEFINITIONS
+This license governs the use, modification, and distribution of NullSec
+security tools and related software. These tools are intended solely for
+authorized security research, penetration testing, and educational purposes.
 
-"Software" refers to NullSec Linux and all associated tools, utilities, 
-documentation, and source code distributed under this license.
+## Terms and Conditions
 
-"Author" refers to the NullSec Linux Project and its contributors.
+### 1. Definitions
 
-"User" refers to any individual or organization using the Software.
+- "Software" refers to all NullSec tools, scripts, configurations, and
+  documentation covered by this license.
+- "Authorized Use" means use that complies with all applicable laws and
+  is performed with explicit permission from system owners.
+- "User" refers to any individual or entity using the Software.
 
-2. GRANT OF LICENSE
+### 2. Grant of License
 
-Subject to the terms of this license, the Author grants you a non-exclusive,
-worldwide, royalty-free license to:
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this Software, to use, copy, modify, merge, publish, distribute, and/or
+sublicense copies of the Software, subject to the following conditions:
 
-  a) Use the Software for personal, educational, and commercial purposes
-  b) Modify the Software for your own use
-  c) Distribute copies of the Software
-  d) Distribute modified versions of the Software
+### 3. Conditions
 
-3. CONDITIONS
+a) **Attribution**: The above copyright notice and this license shall be
+   included in all copies or substantial portions of the Software.
 
-The above rights are granted provided that:
+b) **Authorized Use Only**: The Software shall ONLY be used for:
+   - Authorized penetration testing with written permission
+   - Security research in controlled environments
+   - Educational and training purposes
+   - Defensive security testing on systems you own or operate
+   - Capture The Flag (CTF) competitions
+   - Bug bounty programs within scope
 
-  a) All copies include this license and copyright notice
-  b) Modified versions are clearly marked as such
-  c) Credit is given to the original NullSec Linux Project
-  d) The Software is not used for malicious purposes against unwilling targets
-  e) The Software is not sold without significant added value
+c) **No Malicious Use**: The Software shall NOT be used for:
+   - Unauthorized access to computer systems
+   - Any illegal activities
+   - Harm, damage, or disruption to systems without authorization
+   - Identity theft, fraud, or other criminal activities
+   - Attacks on critical infrastructure
+   - Distribution of malware
 
-4. SECURITY TOOLS DISCLAIMER
+d) **Disclaimer of Warranty**: THE SOFTWARE IS PROVIDED "AS IS", WITHOUT
+   WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO
+   THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+   NONINFRINGEMENT.
 
-NullSec Linux contains security and penetration testing tools. By using this
-Software, you agree to:
+e) **Limitation of Liability**: IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+   HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
+   AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+   CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-  a) Use these tools only on systems you own or have explicit permission to test
-  b) Comply with all applicable laws and regulations
-  c) Accept full responsibility for your actions
-  d) Not use these tools for unauthorized access or illegal activities
+### 4. Ethical Use Clause
 
-5. WARRANTY DISCLAIMER
+Users of this Software agree to:
+- Respect privacy and data protection laws (GDPR, CCPA, etc.)
+- Report discovered vulnerabilities responsibly
+- Not use the Software against critical infrastructure without authorization
+- Follow responsible disclosure practices
+- Obtain proper authorization before any security testing
+- Document and maintain logs of authorized testing activities
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+### 5. Termination
 
-6. LIMITATION OF LIABILITY
+This license automatically terminates if you violate any of these terms.
+Upon termination, you must destroy all copies of the Software.
 
-IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, INCIDENTAL, INDIRECT,
-OR CONSEQUENTIAL DAMAGES WHATSOEVER ARISING OUT OF OR IN CONNECTION WITH THE
-USE OF OR INABILITY TO USE THE SOFTWARE.
+### 6. Governing Law
 
-7. TERMINATION
+This license shall be governed by applicable international cybersecurity
+laws and the laws of the jurisdiction where the Software is used.
 
-This license automatically terminates if you fail to comply with its terms.
-Upon termination, you must destroy all copies of the Software in your possession.
+### 7. Modifications
 
-8. GOVERNING LAW
+Modified versions must:
+- Clearly indicate that changes were made
+- Retain this license and copyright notices
+- Not misrepresent the origin of the Software
 
-This license shall be governed by and construed in accordance with applicable
-international copyright laws.
+---
 
-================================================================================
-                              SIGNATURE VERIFICATION
-================================================================================
+## Acknowledgments
 
-All official NullSec Linux releases are signed with GPG key:
-Key ID: NULLSEC-2026
-Fingerprint: [Generated at build time]
+This project includes components inspired by or compatible with:
+- Various open-source security tools
+- The security research community
+- Ethical hacking practitioners worldwide
 
-Verify releases at: https://github.com/nullsec-linux/releases
+---
 
-================================================================================
+By using NullSec Software, you acknowledge that you have read, understood,
+and agree to be bound by the terms of this license.
 
-For questions or licensing inquiries: nullsec@proton.me
+**USE RESPONSIBLY. HACK ETHICALLY.**
 
-NullSec Linux - Security Through Transparency
+---
+
+bad-antics development
+NullSec Project
+https://github.com/bad-antics
+
+"With great power comes great responsibility."

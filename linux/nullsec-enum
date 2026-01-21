@@ -1,0 +1,366 @@
+#!/bin/bash
+# ============================================================================
+# NullSec Enum - Service Enumeration Toolkit
+# ============================================================================
+# Automated enumeration for common services during pentesting
+# Licensed under NullSec Public License v1.0
+# ============================================================================
+
+VERSION="1.0.0"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+WHITE='\033[1;37m'
+NC='\033[0m'
+
+OUTPUT_DIR="$HOME/.local/share/nullsec/enum"
+mkdir -p "$OUTPUT_DIR"
+
+info() { echo -e "${CYAN}[*]${NC} $1"; }
+success() { echo -e "${GREEN}[✓]${NC} $1"; }
+warn() { echo -e "${YELLOW}[!]${NC} $1"; }
+error() { echo -e "${RED}[✗]${NC} $1"; }
+header() { echo -e "\n${CYAN}${BOLD}═══ $1 ═══${NC}\n"; }
+
+# SMB Enumeration
+enum_smb() {
+    local target="$1"
+    [[ -z "$target" ]] && { error "Target required"; return 1; }
+    
+    header "SMB Enumeration: $target"
+    
+    echo -e "${WHITE}Checking SMB ports...${NC}"
+    for port in 139 445; do
+        timeout 3 bash -c "echo >/dev/tcp/$target/$port" 2>/dev/null && \
+            echo -e "  ${GREEN}✓${NC} Port $port open" || \
+            echo -e "  ${RED}✗${NC} Port $port closed"
+    done
+    echo ""
+    
+    if command -v smbclient &>/dev/null; then
+        echo -e "${WHITE}Listing shares (anonymous):${NC}"
+        smbclient -N -L "//$target" 2>/dev/null || echo "  Anonymous listing failed"
+        echo ""
+    fi
+    
+    if command -v rpcclient &>/dev/null; then
+        echo -e "${WHITE}RPC enumeration:${NC}"
+        rpcclient -U "" -N "$target" -c "enumdomusers" 2>/dev/null | head -20
+        echo ""
+    fi
+    
+    if command -v enum4linux &>/dev/null; then
+        echo -e "${WHITE}Running enum4linux...${NC}"
+        enum4linux -a "$target" 2>/dev/null | head -100
+    fi
+}
+
+# HTTP Enumeration
+enum_http() {
+    local target="$1"
+    local port="${2:-80}"
+    
+    [[ -z "$target" ]] && { error "Target required"; return 1; }
+    
+    local url="http://$target:$port"
+    [[ "$port" == "443" ]] && url="https://$target:$port"
+    
+    header "HTTP Enumeration: $url"
+    
+    echo -e "${WHITE}HTTP Headers:${NC}"
+    curl -sI "$url" 2>/dev/null | head -20
+    echo ""
+    
+    echo -e "${WHITE}Server fingerprint:${NC}"
+    curl -sI "$url" 2>/dev/null | grep -iE "^(server|x-powered|x-aspnet|x-generator):"
+    echo ""
+    
+    echo -e "${WHITE}Checking common paths:${NC}"
+    local paths=(
+        "/robots.txt"
+        "/sitemap.xml"
+        "/.git/HEAD"
+        "/.svn/entries"
+        "/.env"
+        "/wp-login.php"
+        "/administrator/"
+        "/admin/"
+        "/login"
+        "/api/"
+        "/swagger/"
+        "/graphql"
+        "/.well-known/security.txt"
+    )
+    
+    for path in "${paths[@]}"; do
+        local status=$(curl -s -o /dev/null -w "%{http_code}" "$url$path" 2>/dev/null)
+        if [[ "$status" == "200" ]]; then
+            echo -e "  ${GREEN}✓${NC} $path (200 OK)"
+        elif [[ "$status" == "301" || "$status" == "302" ]]; then
+            echo -e "  ${YELLOW}→${NC} $path ($status Redirect)"
+        elif [[ "$status" == "403" ]]; then
+            echo -e "  ${YELLOW}!${NC} $path (403 Forbidden)"
+        fi
+    done
+    echo ""
+    
+    if command -v whatweb &>/dev/null; then
+        echo -e "${WHITE}WhatWeb scan:${NC}"
+        whatweb -q "$url" 2>/dev/null
+    fi
+}
+
+# SSH Enumeration
+enum_ssh() {
+    local target="$1"
+    local port="${2:-22}"
+    
+    [[ -z "$target" ]] && { error "Target required"; return 1; }
+    
+    header "SSH Enumeration: $target:$port"
+    
+    echo -e "${WHITE}Banner grab:${NC}"
+    timeout 5 nc -vn "$target" "$port" 2>&1 | head -5
+    echo ""
+    
+    echo -e "${WHITE}SSH version:${NC}"
+    ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=no \
+        "$target" -p "$port" 2>&1 | head -3
+    echo ""
+    
+    if command -v ssh-audit &>/dev/null; then
+        echo -e "${WHITE}SSH audit:${NC}"
+        ssh-audit -p "$port" "$target" 2>/dev/null | head -50
+    fi
+}
+
+# FTP Enumeration
+enum_ftp() {
+    local target="$1"
+    local port="${2:-21}"
+    
+    [[ -z "$target" ]] && { error "Target required"; return 1; }
+    
+    header "FTP Enumeration: $target:$port"
+    
+    echo -e "${WHITE}Banner grab:${NC}"
+    timeout 5 nc -vn "$target" "$port" 2>&1 | head -5
+    echo ""
+    
+    echo -e "${WHITE}Anonymous login test:${NC}"
+    if command -v ftp &>/dev/null; then
+        timeout 10 ftp -n "$target" "$port" << 'EOF' 2>&1 | head -20
+user anonymous anonymous@test.com
+ls
+quit
+EOF
+    else
+        echo "  FTP client not available"
+    fi
+}
+
+# DNS Enumeration
+enum_dns() {
+    local domain="$1"
+    [[ -z "$domain" ]] && { error "Domain required"; return 1; }
+    
+    header "DNS Enumeration: $domain"
+    
+    echo -e "${WHITE}A Records:${NC}"
+    dig +short A "$domain" 2>/dev/null
+    echo ""
+    
+    echo -e "${WHITE}AAAA Records:${NC}"
+    dig +short AAAA "$domain" 2>/dev/null
+    echo ""
+    
+    echo -e "${WHITE}MX Records:${NC}"
+    dig +short MX "$domain" 2>/dev/null
+    echo ""
+    
+    echo -e "${WHITE}NS Records:${NC}"
+    dig +short NS "$domain" 2>/dev/null
+    echo ""
+    
+    echo -e "${WHITE}TXT Records:${NC}"
+    dig +short TXT "$domain" 2>/dev/null
+    echo ""
+    
+    echo -e "${WHITE}SOA Record:${NC}"
+    dig +short SOA "$domain" 2>/dev/null
+    echo ""
+    
+    echo -e "${WHITE}Zone transfer test:${NC}"
+    for ns in $(dig +short NS "$domain" 2>/dev/null); do
+        echo "  Testing $ns..."
+        dig @"$ns" "$domain" AXFR 2>/dev/null | head -20
+    done
+    echo ""
+    
+    echo -e "${WHITE}Common subdomains:${NC}"
+    local subs=(www mail ftp admin dev staging api app portal)
+    for sub in "${subs[@]}"; do
+        local ip=$(dig +short "$sub.$domain" 2>/dev/null | head -1)
+        [[ -n "$ip" ]] && echo "  $sub.$domain -> $ip"
+    done
+}
+
+# SNMP Enumeration
+enum_snmp() {
+    local target="$1"
+    local community="${2:-public}"
+    
+    [[ -z "$target" ]] && { error "Target required"; return 1; }
+    
+    header "SNMP Enumeration: $target"
+    
+    if command -v snmpwalk &>/dev/null; then
+        echo -e "${WHITE}System info:${NC}"
+        snmpwalk -v2c -c "$community" "$target" system 2>/dev/null | head -20
+        echo ""
+        
+        echo -e "${WHITE}Interfaces:${NC}"
+        snmpwalk -v2c -c "$community" "$target" ifDescr 2>/dev/null | head -20
+    else
+        warn "snmpwalk not installed"
+        echo "  Install with: apt install snmp"
+    fi
+}
+
+# LDAP Enumeration  
+enum_ldap() {
+    local target="$1"
+    local port="${2:-389}"
+    
+    [[ -z "$target" ]] && { error "Target required"; return 1; }
+    
+    header "LDAP Enumeration: $target:$port"
+    
+    if command -v ldapsearch &>/dev/null; then
+        echo -e "${WHITE}Anonymous bind test:${NC}"
+        ldapsearch -x -H "ldap://$target:$port" -s base namingContexts 2>/dev/null
+        echo ""
+        
+        echo -e "${WHITE}Root DSE:${NC}"
+        ldapsearch -x -H "ldap://$target:$port" -s base "" 2>/dev/null | head -30
+    else
+        warn "ldapsearch not installed"
+        echo "  Install with: apt install ldap-utils"
+    fi
+}
+
+# MySQL Enumeration
+enum_mysql() {
+    local target="$1"
+    local port="${2:-3306}"
+    
+    [[ -z "$target" ]] && { error "Target required"; return 1; }
+    
+    header "MySQL Enumeration: $target:$port"
+    
+    echo -e "${WHITE}Port check:${NC}"
+    timeout 3 bash -c "echo >/dev/tcp/$target/$port" 2>/dev/null && \
+        echo "  Port $port is open" || { echo "  Port closed"; return; }
+    echo ""
+    
+    echo -e "${WHITE}Banner grab:${NC}"
+    timeout 5 nc -vn "$target" "$port" 2>&1 | head -5 | xxd | head -10
+    echo ""
+    
+    if command -v mysql &>/dev/null; then
+        echo -e "${WHITE}Anonymous connection test:${NC}"
+        mysql -h "$target" -P "$port" -u root --connect-timeout=5 -e "SELECT VERSION();" 2>&1 | head -5
+    fi
+}
+
+# Full enumeration
+enum_full() {
+    local target="$1"
+    [[ -z "$target" ]] && { error "Target required"; return 1; }
+    
+    local output="$OUTPUT_DIR/enum-$target-$(date +%Y%m%d-%H%M%S).txt"
+    
+    info "Running full enumeration on $target..."
+    
+    {
+        echo "NULLSEC ENUMERATION REPORT"
+        echo "=========================="
+        echo "Target: $target"
+        echo "Date: $(date)"
+        echo ""
+        
+        echo "=== Port Scan ==="
+        if command -v nmap &>/dev/null; then
+            nmap -sV -sC -p- --min-rate 1000 "$target" 2>/dev/null
+        else
+            # Basic port scan
+            for port in 21 22 23 25 53 80 110 139 143 443 445 993 995 3306 3389 5432 8080; do
+                timeout 1 bash -c "echo >/dev/tcp/$target/$port" 2>/dev/null && echo "Port $port: open"
+            done
+        fi
+        echo ""
+        
+        # Run service-specific enumeration based on open ports
+        timeout 1 bash -c "echo >/dev/tcp/$target/80" 2>/dev/null && enum_http "$target" 80
+        timeout 1 bash -c "echo >/dev/tcp/$target/443" 2>/dev/null && enum_http "$target" 443
+        timeout 1 bash -c "echo >/dev/tcp/$target/22" 2>/dev/null && enum_ssh "$target"
+        timeout 1 bash -c "echo >/dev/tcp/$target/21" 2>/dev/null && enum_ftp "$target"
+        timeout 1 bash -c "echo >/dev/tcp/$target/445" 2>/dev/null && enum_smb "$target"
+        
+    } | tee "$output"
+    
+    success "Report saved to $output"
+}
+
+# Help
+show_help() {
+    cat << 'HELP'
+NullSec Enum - Service Enumeration Toolkit
+
+⚠️  FOR AUTHORIZED PENETRATION TESTING ONLY ⚠️
+
+USAGE:
+    nullsec-enum <service> <target> [options]
+
+SERVICES:
+    smb <target>              SMB/CIFS enumeration
+    http <target> [port]      HTTP/HTTPS enumeration
+    ssh <target> [port]       SSH enumeration
+    ftp <target> [port]       FTP enumeration
+    dns <domain>              DNS enumeration
+    snmp <target> [community] SNMP enumeration
+    ldap <target> [port]      LDAP enumeration
+    mysql <target> [port]     MySQL enumeration
+    full <target>             Full service enumeration
+
+EXAMPLES:
+    nullsec-enum smb 192.168.1.100
+    nullsec-enum http 10.10.10.10 8080
+    nullsec-enum dns example.com
+    nullsec-enum full 192.168.1.1
+
+OUTPUT:
+    Reports saved to: ~/.local/share/nullsec/enum/
+
+LICENSE:
+    NullSec Public License v1.0
+HELP
+}
+
+# Main
+case "$1" in
+    -h|--help|help|"") show_help ;;
+    smb) shift; enum_smb "$@" ;;
+    http|https|web) shift; enum_http "$@" ;;
+    ssh) shift; enum_ssh "$@" ;;
+    ftp) shift; enum_ftp "$@" ;;
+    dns) shift; enum_dns "$@" ;;
+    snmp) shift; enum_snmp "$@" ;;
+    ldap) shift; enum_ldap "$@" ;;
+    mysql|sql) shift; enum_mysql "$@" ;;
+    full|all) shift; enum_full "$@" ;;
+    *) error "Unknown service: $1"; show_help; exit 1 ;;
+esac

@@ -1,0 +1,430 @@
+#!/bin/bash
+# ============================================================================
+# NullSec Wordlist - Wordlist Generation & Management
+# ============================================================================
+# Generate custom wordlists for password attacks and fuzzing
+# Licensed under NullSec Public License v1.0
+# ============================================================================
+
+VERSION="1.0.0"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+WHITE='\033[1;37m'
+NC='\033[0m'
+
+WORDLIST_DIR="$HOME/.local/share/nullsec/wordlists"
+mkdir -p "$WORDLIST_DIR"
+
+info() { echo -e "${CYAN}[*]${NC} $1"; }
+success() { echo -e "${GREEN}[✓]${NC} $1"; }
+warn() { echo -e "${YELLOW}[!]${NC} $1"; }
+error() { echo -e "${RED}[✗]${NC} $1"; }
+
+# Generate basic wordlist from keywords
+generate_basic() {
+    local keywords=("$@")
+    local output="$WORDLIST_DIR/custom-$(date +%Y%m%d%H%M%S).txt"
+    
+    [[ ${#keywords[@]} -eq 0 ]] && { error "Keywords required"; return 1; }
+    
+    info "Generating wordlist from keywords: ${keywords[*]}"
+    
+    {
+        # Original keywords
+        for word in "${keywords[@]}"; do
+            echo "$word"
+            echo "${word,,}"
+            echo "${word^^}"
+            echo "${word^}"
+        done
+        
+        # With numbers
+        for word in "${keywords[@]}"; do
+            for i in {0..9}; do
+                echo "$word$i"
+                echo "${word}${i}${i}"
+            done
+            for i in {00..99}; do
+                echo "$word$i"
+            done
+            for year in 2020 2021 2022 2023 2024 2025 2026; do
+                echo "$word$year"
+                echo "${word}${year:2:2}"
+            done
+        done
+        
+        # With special chars
+        for word in "${keywords[@]}"; do
+            for char in '!' '@' '#' '$' '%' '&' '*' '.' '_' '-'; do
+                echo "$word$char"
+                echo "${char}$word"
+                echo "$word${char}123"
+            done
+        done
+        
+        # Combinations
+        for word1 in "${keywords[@]}"; do
+            for word2 in "${keywords[@]}"; do
+                [[ "$word1" != "$word2" ]] && echo "${word1}${word2}"
+            done
+        done
+        
+        # Leet speak
+        for word in "${keywords[@]}"; do
+            echo "$word" | sed 's/a/4/g; s/e/3/g; s/i/1/g; s/o/0/g; s/s/5/g'
+            echo "$word" | sed 's/a/@/g; s/s/$/g; s/i/!/g'
+        done
+        
+    } | sort -u > "$output"
+    
+    local count=$(wc -l < "$output")
+    success "Generated $output ($count words)"
+}
+
+# Generate number patterns
+generate_numbers() {
+    local min="${1:-0}"
+    local max="${2:-9999}"
+    local output="$WORDLIST_DIR/numbers-${min}-${max}.txt"
+    
+    info "Generating numbers from $min to $max..."
+    
+    seq "$min" "$max" > "$output"
+    
+    # Add padded versions
+    local digits=${#max}
+    seq -f "%0${digits}g" "$min" "$max" >> "$output"
+    
+    sort -u "$output" -o "$output"
+    
+    local count=$(wc -l < "$output")
+    success "Generated $output ($count entries)"
+}
+
+# Generate dates
+generate_dates() {
+    local start_year="${1:-1980}"
+    local end_year="${2:-2026}"
+    local output="$WORDLIST_DIR/dates-${start_year}-${end_year}.txt"
+    
+    info "Generating date patterns..."
+    
+    {
+        for year in $(seq "$start_year" "$end_year"); do
+            echo "$year"
+            echo "${year:2:2}"
+            
+            for month in $(seq -f "%02g" 1 12); do
+                echo "$year$month"
+                echo "$month$year"
+                echo "${year:2:2}$month"
+                
+                for day in $(seq -f "%02g" 1 31); do
+                    echo "$day$month$year"
+                    echo "$year$month$day"
+                    echo "$month$day$year"
+                    echo "${year:2:2}$month$day"
+                    echo "$day$month${year:2:2}"
+                    echo "$day-$month-$year"
+                    echo "$year-$month-$day"
+                    echo "$month/$day/$year"
+                done
+            done
+        done
+    } > "$output"
+    
+    local count=$(wc -l < "$output")
+    success "Generated $output ($count entries)"
+}
+
+# Generate from website (cewl-like)
+generate_from_url() {
+    local url="$1"
+    local depth="${2:-2}"
+    local output="$WORDLIST_DIR/cewl-$(echo "$url" | md5sum | cut -c1-8).txt"
+    
+    [[ -z "$url" ]] && { error "URL required"; return 1; }
+    
+    info "Extracting words from $url (depth: $depth)..."
+    
+    if command -v cewl &>/dev/null; then
+        cewl -d "$depth" -m 4 -w "$output" "$url" 2>/dev/null
+    else
+        # Fallback: basic word extraction
+        curl -sL "$url" 2>/dev/null | \
+            sed 's/<[^>]*>//g' | \
+            tr -cs '[:alnum:]' '\n' | \
+            grep -E '^.{4,}$' | \
+            sort -u > "$output"
+    fi
+    
+    local count=$(wc -l < "$output")
+    success "Generated $output ($count words)"
+}
+
+# Generate username variations
+generate_usernames() {
+    local firstname="$1"
+    local lastname="$2"
+    local output="$WORDLIST_DIR/usernames-${firstname}-${lastname}.txt"
+    
+    [[ -z "$firstname" || -z "$lastname" ]] && { 
+        error "First and last name required"
+        return 1
+    }
+    
+    info "Generating username variations..."
+    
+    local f="${firstname,,}"
+    local l="${lastname,,}"
+    local fi="${f:0:1}"
+    local li="${l:0:1}"
+    
+    {
+        echo "$f"
+        echo "$l"
+        echo "$f$l"
+        echo "$l$f"
+        echo "${f}.${l}"
+        echo "${l}.${f}"
+        echo "${f}_${l}"
+        echo "${l}_${f}"
+        echo "${fi}${l}"
+        echo "${f}${li}"
+        echo "${fi}.${l}"
+        echo "${f}.${li}"
+        echo "${fi}_${l}"
+        echo "${f}_${li}"
+        echo "${fi}${l}1"
+        echo "${f}${li}1"
+        echo "${l}${f:0:1}"
+        echo "${f}${l:0:1}"
+        
+        # With numbers
+        for num in 1 01 123 1234 2024 2025; do
+            echo "${f}${l}${num}"
+            echo "${fi}${l}${num}"
+            echo "${f}${num}"
+            echo "${l}${num}"
+        done
+        
+    } | sort -u > "$output"
+    
+    local count=$(wc -l < "$output")
+    success "Generated $output ($count usernames)"
+}
+
+# Combine wordlists
+combine_lists() {
+    local output="$WORDLIST_DIR/combined-$(date +%Y%m%d%H%M%S).txt"
+    local files=("$@")
+    
+    [[ ${#files[@]} -lt 2 ]] && { error "At least 2 files required"; return 1; }
+    
+    info "Combining ${#files[@]} wordlists..."
+    
+    cat "${files[@]}" | sort -u > "$output"
+    
+    local count=$(wc -l < "$output")
+    success "Generated $output ($count unique words)"
+}
+
+# Mangle wordlist (add rules)
+mangle_list() {
+    local input="$1"
+    local output="${2:-$WORDLIST_DIR/mangled-$(date +%Y%m%d%H%M%S).txt}"
+    
+    [[ ! -f "$input" ]] && { error "Input file required"; return 1; }
+    
+    info "Mangling wordlist..."
+    
+    {
+        cat "$input"
+        
+        # Capitalize
+        sed 's/./\u&/' "$input"
+        sed 's/.*/\U&/' "$input"
+        
+        # Append numbers
+        sed 's/$/ 1/' "$input" | tr -d ' '
+        sed 's/$/ 123/' "$input" | tr -d ' '
+        sed 's/$/ 2024/' "$input" | tr -d ' '
+        
+        # Append special
+        sed 's/$/ !/' "$input" | tr -d ' '
+        sed 's/$/ @/' "$input" | tr -d ' '
+        
+        # Leet
+        sed 's/a/4/g; s/e/3/g; s/i/1/g; s/o/0/g; s/s/5/g' "$input"
+        
+        # Reverse
+        rev "$input"
+        
+        # Double
+        while read -r word; do
+            echo "${word}${word}"
+        done < "$input"
+        
+    } | sort -u > "$output"
+    
+    local count=$(wc -l < "$output")
+    success "Generated $output ($count words)"
+}
+
+# Download common wordlists
+download_lists() {
+    info "Downloading common wordlists..."
+    
+    local lists=(
+        "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Passwords/Common-Credentials/10k-most-common.txt"
+        "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Usernames/top-usernames-shortlist.txt"
+        "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/Web-Content/common.txt"
+    )
+    
+    for url in "${lists[@]}"; do
+        local name=$(basename "$url")
+        local dest="$WORDLIST_DIR/$name"
+        
+        if [[ ! -f "$dest" ]]; then
+            curl -sL "$url" -o "$dest" 2>/dev/null && \
+                success "Downloaded: $name" || \
+                warn "Failed: $name"
+        else
+            info "Exists: $name"
+        fi
+    done
+}
+
+# List wordlists
+list_wordlists() {
+    echo -e "\n${CYAN}${BOLD}═══ Available Wordlists ═══${NC}\n"
+    
+    if [[ -d "$WORDLIST_DIR" ]]; then
+        ls -lh "$WORDLIST_DIR"/*.txt 2>/dev/null | while read -r line; do
+            local size=$(echo "$line" | awk '{print $5}')
+            local name=$(echo "$line" | awk '{print $NF}')
+            local words=$(wc -l < "$name" 2>/dev/null)
+            echo -e "  $(basename "$name"): ${size} (${words} words)"
+        done
+    fi
+    
+    [[ $(ls "$WORDLIST_DIR"/*.txt 2>/dev/null | wc -l) -eq 0 ]] && warn "No wordlists found"
+}
+
+# Common passwords list
+generate_common() {
+    local output="$WORDLIST_DIR/common-passwords.txt"
+    
+    info "Generating common passwords list..."
+    
+    cat > "$output" << 'PASSWORDS'
+password
+123456
+12345678
+qwerty
+abc123
+monkey
+1234567
+letmein
+trustno1
+dragon
+baseball
+iloveyou
+master
+sunshine
+ashley
+bailey
+shadow
+123123
+654321
+superman
+qazwsx
+michael
+football
+password1
+password123
+welcome
+welcome1
+admin
+admin123
+root
+toor
+login
+guest
+pass
+test
+test123
+changeme
+default
+secret
+Pa$$w0rd
+P@ssw0rd
+P@ssword
+Summer2024
+Winter2024
+Spring2024
+Fall2024
+January2024
+Company123
+PASSWORDS
+
+    local count=$(wc -l < "$output")
+    success "Generated $output ($count passwords)"
+}
+
+# Help
+show_help() {
+    cat << 'HELP'
+NullSec Wordlist - Wordlist Generation & Management
+
+USAGE:
+    nullsec-wordlist <command> [options]
+
+COMMANDS:
+    generate <words...>         Generate from keywords
+    numbers <min> <max>         Generate number sequences
+    dates [start] [end]         Generate date patterns
+    cewl <url> [depth]          Extract words from website
+    usernames <first> <last>    Generate username variations
+    combine <file1> <file2>...  Combine wordlists
+    mangle <input> [output]     Apply mangling rules
+    common                      Generate common passwords
+    download                    Download SecLists samples
+    list                        List available wordlists
+
+EXAMPLES:
+    nullsec-wordlist generate company admin password
+    nullsec-wordlist numbers 0 9999
+    nullsec-wordlist dates 2020 2026
+    nullsec-wordlist cewl https://target.com 2
+    nullsec-wordlist usernames john smith
+    nullsec-wordlist mangle input.txt
+    nullsec-wordlist download
+
+OUTPUT:
+    Wordlists saved to: ~/.local/share/nullsec/wordlists/
+
+LICENSE:
+    NullSec Public License v1.0
+HELP
+}
+
+# Main
+case "$1" in
+    -h|--help|help|"") show_help ;;
+    generate|gen|create) shift; generate_basic "$@" ;;
+    numbers|num) shift; generate_numbers "$@" ;;
+    dates|date) shift; generate_dates "$@" ;;
+    cewl|url|web) shift; generate_from_url "$@" ;;
+    usernames|user|users) shift; generate_usernames "$@" ;;
+    combine|merge|cat) shift; combine_lists "$@" ;;
+    mangle|mutate|rules) shift; mangle_list "$@" ;;
+    common|default) generate_common ;;
+    download|dl|get) download_lists ;;
+    list|ls) list_wordlists ;;
+    *) error "Unknown command: $1"; show_help; exit 1 ;;
+esac

@@ -1,0 +1,344 @@
+#!/bin/bash
+# ============================================================================
+# NullSec Crack - Password Cracking Wrapper
+# ============================================================================
+# Unified interface for password cracking tools
+# Licensed under NullSec Public License v1.0
+# ============================================================================
+
+VERSION="1.0.0"
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+WHITE='\033[1;37m'
+NC='\033[0m'
+
+WORDLIST_DIR="$HOME/.local/share/nullsec/wordlists"
+OUTPUT_DIR="$HOME/.local/share/nullsec/cracked"
+mkdir -p "$WORDLIST_DIR" "$OUTPUT_DIR"
+
+info() { echo -e "${CYAN}[*]${NC} $1"; }
+success() { echo -e "${GREEN}[✓]${NC} $1"; }
+warn() { echo -e "${YELLOW}[!]${NC} $1"; }
+error() { echo -e "${RED}[✗]${NC} $1"; }
+
+# Identify hash type
+identify_hash() {
+    local hash="$1"
+    local len=${#hash}
+    
+    echo -e "\n${CYAN}Hash Analysis:${NC}"
+    echo "  Length: $len characters"
+    echo "  Hash: ${hash:0:32}..."
+    echo ""
+    
+    case $len in
+        32)
+            if [[ "$hash" =~ ^[a-fA-F0-9]+$ ]]; then
+                echo "  Possible: MD5, NTLM, MD4"
+                echo "  Hashcat mode: 0 (MD5), 1000 (NTLM)"
+            fi
+            ;;
+        40)
+            echo "  Possible: SHA1, MySQL5"
+            echo "  Hashcat mode: 100 (SHA1), 300 (MySQL5)"
+            ;;
+        64)
+            echo "  Possible: SHA256, SHA3-256"
+            echo "  Hashcat mode: 1400 (SHA256)"
+            ;;
+        128)
+            echo "  Possible: SHA512, Whirlpool"
+            echo "  Hashcat mode: 1700 (SHA512)"
+            ;;
+        *)
+            if [[ "$hash" =~ ^\$1\$ ]]; then
+                echo "  Type: MD5crypt"
+                echo "  Hashcat mode: 500"
+            elif [[ "$hash" =~ ^\$2[aby]?\$ ]]; then
+                echo "  Type: bcrypt"
+                echo "  Hashcat mode: 3200"
+            elif [[ "$hash" =~ ^\$5\$ ]]; then
+                echo "  Type: SHA256crypt"
+                echo "  Hashcat mode: 7400"
+            elif [[ "$hash" =~ ^\$6\$ ]]; then
+                echo "  Type: SHA512crypt"
+                echo "  Hashcat mode: 1800"
+            elif [[ "$hash" =~ ^\$argon2 ]]; then
+                echo "  Type: Argon2"
+                echo "  Hashcat mode: Not directly supported"
+            else
+                echo "  Unknown hash type"
+            fi
+            ;;
+    esac
+}
+
+# Crack with John
+crack_john() {
+    local hashfile="$1"
+    local wordlist="${2:-$WORDLIST_DIR/rockyou.txt}"
+    local format="$3"
+    
+    [[ ! -f "$hashfile" ]] && { error "Hash file required"; return 1; }
+    
+    if ! command -v john &>/dev/null; then
+        error "John the Ripper not installed"
+        echo "  Install: sudo apt install john"
+        return 1
+    fi
+    
+    info "Starting John the Ripper..."
+    
+    local cmd="john"
+    [[ -n "$format" ]] && cmd+=" --format=$format"
+    [[ -f "$wordlist" ]] && cmd+=" --wordlist=$wordlist"
+    cmd+=" $hashfile"
+    
+    echo "  Command: $cmd"
+    echo ""
+    
+    $cmd
+    
+    echo ""
+    info "Showing cracked passwords:"
+    john --show "$hashfile"
+}
+
+# Crack with Hashcat
+crack_hashcat() {
+    local hashfile="$1"
+    local mode="${2:-0}"
+    local wordlist="${3:-$WORDLIST_DIR/rockyou.txt}"
+    local output="$OUTPUT_DIR/hashcat-$(date +%Y%m%d%H%M%S).txt"
+    
+    [[ ! -f "$hashfile" ]] && { error "Hash file required"; return 1; }
+    
+    if ! command -v hashcat &>/dev/null; then
+        error "Hashcat not installed"
+        echo "  Install: sudo apt install hashcat"
+        return 1
+    fi
+    
+    info "Starting Hashcat (mode: $mode)..."
+    
+    hashcat -m "$mode" -a 0 "$hashfile" "$wordlist" -o "$output" --force 2>/dev/null
+    
+    if [[ -f "$output" ]] && [[ -s "$output" ]]; then
+        success "Cracked passwords saved to $output"
+        cat "$output"
+    fi
+}
+
+# Crack ZIP
+crack_zip() {
+    local zipfile="$1"
+    local wordlist="${2:-$WORDLIST_DIR/rockyou.txt}"
+    
+    [[ ! -f "$zipfile" ]] && { error "ZIP file required"; return 1; }
+    
+    if command -v fcrackzip &>/dev/null; then
+        info "Cracking ZIP with fcrackzip..."
+        fcrackzip -u -D -p "$wordlist" "$zipfile"
+    elif command -v john &>/dev/null; then
+        info "Extracting hash with zip2john..."
+        local hash_file="/tmp/zip_hash_$$.txt"
+        zip2john "$zipfile" > "$hash_file" 2>/dev/null
+        crack_john "$hash_file" "$wordlist"
+        rm -f "$hash_file"
+    else
+        error "No ZIP cracker available"
+        echo "  Install: sudo apt install fcrackzip"
+    fi
+}
+
+# Crack RAR
+crack_rar() {
+    local rarfile="$1"
+    local wordlist="${2:-$WORDLIST_DIR/rockyou.txt}"
+    
+    [[ ! -f "$rarfile" ]] && { error "RAR file required"; return 1; }
+    
+    if command -v john &>/dev/null && command -v rar2john &>/dev/null; then
+        info "Extracting hash with rar2john..."
+        local hash_file="/tmp/rar_hash_$$.txt"
+        rar2john "$rarfile" > "$hash_file" 2>/dev/null
+        crack_john "$hash_file" "$wordlist"
+        rm -f "$hash_file"
+    else
+        error "rar2john not available"
+    fi
+}
+
+# Crack PDF
+crack_pdf() {
+    local pdffile="$1"
+    local wordlist="${2:-$WORDLIST_DIR/rockyou.txt}"
+    
+    [[ ! -f "$pdffile" ]] && { error "PDF file required"; return 1; }
+    
+    if command -v pdfcrack &>/dev/null; then
+        info "Cracking PDF with pdfcrack..."
+        pdfcrack -f "$pdffile" -w "$wordlist"
+    elif command -v john &>/dev/null && command -v pdf2john &>/dev/null; then
+        info "Extracting hash with pdf2john..."
+        local hash_file="/tmp/pdf_hash_$$.txt"
+        pdf2john "$pdffile" > "$hash_file" 2>/dev/null
+        crack_john "$hash_file" "$wordlist"
+        rm -f "$hash_file"
+    else
+        error "No PDF cracker available"
+    fi
+}
+
+# Crack SSH key
+crack_ssh() {
+    local keyfile="$1"
+    local wordlist="${2:-$WORDLIST_DIR/rockyou.txt}"
+    
+    [[ ! -f "$keyfile" ]] && { error "SSH key file required"; return 1; }
+    
+    if command -v john &>/dev/null && command -v ssh2john &>/dev/null; then
+        info "Extracting hash from SSH key..."
+        local hash_file="/tmp/ssh_hash_$$.txt"
+        ssh2john "$keyfile" > "$hash_file" 2>/dev/null
+        crack_john "$hash_file" "$wordlist"
+        rm -f "$hash_file"
+    else
+        error "ssh2john not available"
+    fi
+}
+
+# Brute force generator
+bruteforce() {
+    local charset="${1:-aA1}"
+    local min="${2:-1}"
+    local max="${3:-4}"
+    
+    info "Generating brute force patterns..."
+    echo "  Charset: $charset"
+    echo "  Length: $min-$max"
+    echo ""
+    
+    local chars=""
+    [[ "$charset" == *"a"* ]] && chars+="abcdefghijklmnopqrstuvwxyz"
+    [[ "$charset" == *"A"* ]] && chars+="ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    [[ "$charset" == *"1"* ]] && chars+="0123456789"
+    [[ "$charset" == *"!"* ]] && chars+='!@#$%^&*'
+    
+    if command -v crunch &>/dev/null; then
+        crunch "$min" "$max" "$chars" 2>/dev/null | head -100
+        warn "Showing first 100 combinations only"
+    else
+        warn "crunch not installed, using basic generator"
+        # Basic recursive generator (limited)
+        for ((i=0; i<${#chars}; i++)); do
+            echo "${chars:$i:1}"
+        done
+    fi
+}
+
+# Download wordlists
+download_wordlists() {
+    info "Downloading common wordlists..."
+    
+    # Check for rockyou
+    if [[ ! -f "$WORDLIST_DIR/rockyou.txt" ]]; then
+        if [[ -f "/usr/share/wordlists/rockyou.txt" ]]; then
+            ln -sf "/usr/share/wordlists/rockyou.txt" "$WORDLIST_DIR/rockyou.txt"
+            success "Linked system rockyou.txt"
+        elif [[ -f "/usr/share/wordlists/rockyou.txt.gz" ]]; then
+            gunzip -c "/usr/share/wordlists/rockyou.txt.gz" > "$WORDLIST_DIR/rockyou.txt"
+            success "Extracted rockyou.txt"
+        else
+            warn "rockyou.txt not found"
+            echo "  Install: sudo apt install wordlists"
+        fi
+    fi
+    
+    # SecLists samples
+    local urls=(
+        "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Passwords/Common-Credentials/10k-most-common.txt"
+        "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Passwords/darkweb2017-top10000.txt"
+    )
+    
+    for url in "${urls[@]}"; do
+        local name=$(basename "$url")
+        if [[ ! -f "$WORDLIST_DIR/$name" ]]; then
+            curl -sL "$url" -o "$WORDLIST_DIR/$name" && success "Downloaded: $name"
+        fi
+    done
+}
+
+# List cracked
+list_cracked() {
+    echo -e "\n${CYAN}Cracked Passwords:${NC}\n"
+    
+    if [[ -d "$OUTPUT_DIR" ]]; then
+        for f in "$OUTPUT_DIR"/*.txt; do
+            [[ -f "$f" ]] && cat "$f"
+        done
+    fi
+    
+    # John potfile
+    [[ -f "$HOME/.john/john.pot" ]] && cat "$HOME/.john/john.pot"
+}
+
+show_help() {
+    cat << 'HELP'
+NullSec Crack - Password Cracking Wrapper
+
+⚠️  FOR AUTHORIZED PENETRATION TESTING ONLY ⚠️
+
+USAGE:
+    nullsec-crack <command> [options]
+
+COMMANDS:
+    identify <hash>              Identify hash type
+    john <file> [wordlist]       Crack with John
+    hashcat <file> <mode> [wl]   Crack with Hashcat
+    zip <file> [wordlist]        Crack ZIP password
+    rar <file> [wordlist]        Crack RAR password
+    pdf <file> [wordlist]        Crack PDF password
+    ssh <key> [wordlist]         Crack SSH key passphrase
+    brute <charset> <min> <max>  Generate brute force patterns
+    wordlists                    Download wordlists
+    cracked                      List cracked passwords
+
+HASHCAT MODES:
+    0     MD5
+    100   SHA1
+    1000  NTLM
+    1400  SHA256
+    1700  SHA512
+    1800  SHA512crypt
+    3200  bcrypt
+
+EXAMPLES:
+    nullsec-crack identify "5f4dcc3b5aa765d61d8327deb882cf99"
+    nullsec-crack john hashes.txt /path/to/wordlist.txt
+    nullsec-crack hashcat ntlm.txt 1000
+    nullsec-crack zip secret.zip
+    nullsec-crack brute aA1 1 6
+
+LICENSE:
+    NullSec Public License v1.0
+HELP
+}
+
+case "$1" in
+    -h|--help|help|"") show_help ;;
+    identify|id) shift; identify_hash "$@" ;;
+    john|jtr) shift; crack_john "$@" ;;
+    hashcat|hc) shift; crack_hashcat "$@" ;;
+    zip) shift; crack_zip "$@" ;;
+    rar) shift; crack_rar "$@" ;;
+    pdf) shift; crack_pdf "$@" ;;
+    ssh) shift; crack_ssh "$@" ;;
+    brute|bf) shift; bruteforce "$@" ;;
+    wordlists|wl|download) download_wordlists ;;
+    cracked|show) list_cracked ;;
+    *) error "Unknown: $1"; show_help; exit 1 ;;
+esac

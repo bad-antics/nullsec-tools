@@ -1,0 +1,30 @@
+#!/bin/bash
+# NullSec Log Analyzer - Generated 2026-01-20
+
+LOG="${1:-/var/log/syslog}"
+
+echo "╔═══════════════════════════════════════╗"
+echo "║   NullSec Log Analyzer                ║"
+echo "╚═══════════════════════════════════════╝"
+echo ""
+echo "Analyzing: $LOG"
+echo ""
+
+if [[ -r "$LOG" ]]; then
+    echo "=== Error Summary ==="
+    grep -ci "error" "$LOG" 2>/dev/null && echo " error occurrences" || echo "0 errors"
+    
+    echo ""
+    echo "=== Warning Summary ==="
+    grep -ci "warn" "$LOG" 2>/dev/null && echo " warning occurrences" || echo "0 warnings"
+    
+    echo ""
+    echo "=== Recent Critical Events ==="
+    grep -iE "critical|fatal|emergency" "$LOG" 2>/dev/null | tail -5
+    
+    echo ""
+    echo "=== Top Talkers ==="
+    awk '{print $5}' "$LOG" 2>/dev/null | sort | uniq -c | sort -rn | head -10
+else
+    echo "Cannot read log file. Try: sudo $0 $LOG"
+fi

