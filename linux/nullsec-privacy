@@ -1,0 +1,340 @@
+#!/bin/bash
+# ============================================================================
+# NullSec Privacy - Privacy Enhancement & Fingerprint Protection
+# ============================================================================
+# Tools for enhancing privacy and reducing digital fingerprint
+# Licensed under NullSec Public License v1.0
+# ============================================================================
+
+VERSION="1.0.0"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+WHITE='\033[1;37m'
+NC='\033[0m'
+BOLD='\033[1m'
+
+DATA_DIR="$HOME/.local/share/nullsec/privacy"
+mkdir -p "$DATA_DIR"
+
+info() { echo -e "${CYAN}[*]${NC} $1"; }
+success() { echo -e "${GREEN}[✓]${NC} $1"; }
+warn() { echo -e "${YELLOW}[!]${NC} $1"; }
+error() { echo -e "${RED}[✗]${NC} $1"; }
+
+# Clear browser data
+clear_browsers() {
+    info "Clearing browser data..."
+    
+    # Firefox
+    if [[ -d "$HOME/.mozilla/firefox" ]]; then
+        find "$HOME/.mozilla/firefox" -name "*.sqlite" -delete 2>/dev/null
+        find "$HOME/.mozilla/firefox" -name "cookies.sqlite*" -delete 2>/dev/null
+        find "$HOME/.mozilla/firefox" -name "webappsstore.sqlite*" -delete 2>/dev/null
+        find "$HOME/.mozilla/firefox" -type d -name "cache2" -exec rm -rf {} \; 2>/dev/null
+        success "Firefox data cleared"
+    fi
+    
+    # Chrome/Chromium
+    for chrome_dir in "$HOME/.config/google-chrome" "$HOME/.config/chromium" "$HOME/.config/BraveSoftware/Brave-Browser"; do
+        if [[ -d "$chrome_dir" ]]; then
+            rm -rf "$chrome_dir"/*/Cookies 2>/dev/null
+            rm -rf "$chrome_dir"/*/Cache 2>/dev/null
+            rm -rf "$chrome_dir"/*/"Local Storage" 2>/dev/null
+            rm -rf "$chrome_dir"/*/"Session Storage" 2>/dev/null
+            success "$(basename "$chrome_dir") data cleared"
+        fi
+    done
+}
+
+# Clear bash history
+clear_history() {
+    info "Clearing shell history..."
+    
+    # Bash
+    [[ -f "$HOME/.bash_history" ]] && cat /dev/null > "$HOME/.bash_history"
+    history -c 2>/dev/null
+    
+    # Zsh
+    [[ -f "$HOME/.zsh_history" ]] && cat /dev/null > "$HOME/.zsh_history"
+    
+    # Fish
+    [[ -f "$HOME/.local/share/fish/fish_history" ]] && cat /dev/null > "$HOME/.local/share/fish/fish_history"
+    
+    success "Shell history cleared"
+}
+
+# Clear system traces
+clear_traces() {
+    info "Clearing system traces..."
+    
+    # Recent files
+    rm -rf "$HOME/.local/share/recently-used.xbel" 2>/dev/null
+    rm -rf "$HOME/.local/share/Trash"/* 2>/dev/null
+    
+    # Thumbnails
+    rm -rf "$HOME/.cache/thumbnails"/* 2>/dev/null
+    
+    # Application caches
+    rm -rf "$HOME/.cache"/*/* 2>/dev/null
+    
+    success "System traces cleared"
+}
+
+# Secure delete
+secure_delete() {
+    local file="$1"
+    local passes="${2:-3}"
+    
+    [[ ! -f "$file" ]] && { error "File not found: $file"; return 1; }
+    
+    info "Securely deleting: $file ($passes passes)"
+    
+    if command -v shred &>/dev/null; then
+        shred -vzfn "$passes" "$file"
+    else
+        # Manual secure delete
+        local size=$(stat -c %s "$file")
+        for ((i=1; i<=passes; i++)); do
+            dd if=/dev/urandom of="$file" bs=1 count="$size" conv=notrunc 2>/dev/null
+        done
+        sync
+        rm -f "$file"
+    fi
+    
+    success "File securely deleted"
+}
+
+# Change MAC address
+change_mac() {
+    local iface="${1:-eth0}"
+    local new_mac="${2:-random}"
+    
+    info "Changing MAC address on $iface..."
+    
+    if [[ "$new_mac" == "random" ]]; then
+        # Generate random MAC with common vendor prefix
+        new_mac=$(printf '02:%02x:%02x:%02x:%02x:%02x' $((RANDOM%256)) $((RANDOM%256)) $((RANDOM%256)) $((RANDOM%256)) $((RANDOM%256)))
+    fi
+    
+    # Save original
+    local orig_mac=$(ip link show "$iface" 2>/dev/null | grep -oE 'link/ether [0-9a-f:]+' | awk '{print $2}')
+    echo "$orig_mac" > "$DATA_DIR/original_mac_$iface"
+    
+    if command -v macchanger &>/dev/null; then
+        sudo ip link set "$iface" down
+        sudo macchanger -m "$new_mac" "$iface"
+        sudo ip link set "$iface" up
+    else
+        sudo ip link set "$iface" down
+        sudo ip link set "$iface" address "$new_mac"
+        sudo ip link set "$iface" up
+    fi
+    
+    success "MAC changed to $new_mac"
+    info "Original MAC saved to $DATA_DIR/original_mac_$iface"
+}
+
+# Restore original MAC
+restore_mac() {
+    local iface="${1:-eth0}"
+    
+    if [[ -f "$DATA_DIR/original_mac_$iface" ]]; then
+        local orig_mac=$(cat "$DATA_DIR/original_mac_$iface")
+        change_mac "$iface" "$orig_mac"
+        success "MAC restored to $orig_mac"
+    else
+        error "No saved MAC found for $iface"
+    fi
+}
+
+# Change hostname temporarily
+change_hostname() {
+    local new_hostname="${1:-nullsec-$(head -c 4 /dev/urandom | xxd -p)}"
+    
+    info "Changing hostname to $new_hostname..."
+    
+    # Save original
+    hostname > "$DATA_DIR/original_hostname"
+    
+    sudo hostname "$new_hostname"
+    
+    success "Hostname changed to $new_hostname"
+    warn "Change is temporary (will reset on reboot)"
+}
+
+# DNS leak test
+dns_leak_test() {
+    info "Testing for DNS leaks..."
+    
+    echo ""
+    echo -e "${WHITE}DNS Servers Being Used:${NC}"
+    
+    # Check resolv.conf
+    echo -e "\n${CYAN}From /etc/resolv.conf:${NC}"
+    grep "^nameserver" /etc/resolv.conf 2>/dev/null | awk '{print "  " $2}'
+    
+    # Check systemd-resolved
+    if command -v resolvectl &>/dev/null; then
+        echo -e "\n${CYAN}From systemd-resolved:${NC}"
+        resolvectl status 2>/dev/null | grep "DNS Servers" | awk '{print "  " $3}'
+    fi
+    
+    # External DNS test
+    echo -e "\n${CYAN}External DNS Test:${NC}"
+    local dns_test=$(dig +short whoami.akamai.net @ns1-1.akamaitech.net 2>/dev/null || echo "Unable to test")
+    echo "  Resolver IP: $dns_test"
+    
+    echo ""
+}
+
+# WebRTC check info
+webrtc_info() {
+    echo -e "\n${CYAN}${BOLD}═══ WebRTC Leak Prevention ═══${NC}\n"
+    
+    echo -e "${WHITE}WebRTC can leak your real IP even through VPN/Tor.${NC}"
+    echo ""
+    echo "To disable WebRTC in Firefox:"
+    echo "  1. Open about:config"
+    echo "  2. Set media.peerconnection.enabled = false"
+    echo ""
+    echo "For Chrome/Brave:"
+    echo "  Install 'WebRTC Leak Prevent' extension"
+    echo ""
+    echo "Test for leaks at: https://browserleaks.com/webrtc"
+}
+
+# Privacy audit
+privacy_audit() {
+    echo -e "\n${CYAN}${BOLD}═══ Privacy Audit ═══${NC}\n"
+    
+    local score=100
+    local issues=()
+    
+    # Check bash history
+    if [[ -f "$HOME/.bash_history" ]] && [[ $(wc -l < "$HOME/.bash_history") -gt 0 ]]; then
+        issues+=("Shell history contains $(wc -l < "$HOME/.bash_history") entries")
+        ((score-=10))
+    fi
+    
+    # Check browser data
+    if [[ -d "$HOME/.mozilla/firefox" ]] && find "$HOME/.mozilla/firefox" -name "cookies.sqlite" 2>/dev/null | grep -q .; then
+        issues+=("Firefox cookies present")
+        ((score-=10))
+    fi
+    
+    # Check for recent files
+    if [[ -f "$HOME/.local/share/recently-used.xbel" ]]; then
+        issues+=("Recent files list exists")
+        ((score-=5))
+    fi
+    
+    # Check trash
+    local trash_count=$(find "$HOME/.local/share/Trash/files" -type f 2>/dev/null | wc -l)
+    if [[ $trash_count -gt 0 ]]; then
+        issues+=("Trash contains $trash_count files")
+        ((score-=5))
+    fi
+    
+    # Check thumbnails
+    local thumb_count=$(find "$HOME/.cache/thumbnails" -type f 2>/dev/null | wc -l)
+    if [[ $thumb_count -gt 0 ]]; then
+        issues+=("$thumb_count cached thumbnails")
+        ((score-=5))
+    fi
+    
+    # Display results
+    if [[ ${#issues[@]} -eq 0 ]]; then
+        echo -e "${GREEN}✓ No privacy issues detected${NC}"
+    else
+        echo -e "${YELLOW}Issues Found:${NC}"
+        for issue in "${issues[@]}"; do
+            echo -e "  ${YELLOW}⚠${NC} $issue"
+        done
+    fi
+    
+    echo ""
+    echo -e "${WHITE}Privacy Score: ${NC}"
+    if [[ $score -ge 80 ]]; then
+        echo -e "${GREEN}$score/100 (Good)${NC}"
+    elif [[ $score -ge 50 ]]; then
+        echo -e "${YELLOW}$score/100 (Fair)${NC}"
+    else
+        echo -e "${RED}$score/100 (Poor)${NC}"
+    fi
+    
+    echo ""
+    echo "Run 'nullsec-privacy clean' to fix these issues"
+}
+
+# Full cleanup
+full_clean() {
+    warn "This will clear all privacy-sensitive data!"
+    echo -n "Continue? [y/N]: "
+    read -r confirm
+    
+    [[ "$confirm" != "y" && "$confirm" != "Y" ]] && { info "Cancelled"; return; }
+    
+    clear_browsers
+    clear_history
+    clear_traces
+    
+    success "Full privacy cleanup completed"
+}
+
+# Help
+show_help() {
+    cat << 'HELP'
+NullSec Privacy - Privacy Enhancement & Fingerprint Protection
+
+USAGE:
+    nullsec-privacy <command> [options]
+
+COMMANDS:
+    audit                   Privacy audit of system
+    clean                   Full privacy cleanup
+    browsers                Clear browser data
+    history                 Clear shell history
+    traces                  Clear system traces
+    
+    shred <file> [passes]   Securely delete file
+    mac <iface> [addr]      Change MAC address
+    mac-restore <iface>     Restore original MAC
+    hostname [name]         Change hostname temporarily
+    
+    dns-leak                Test for DNS leaks
+    webrtc                  WebRTC leak info
+
+EXAMPLES:
+    nullsec-privacy audit
+    nullsec-privacy clean
+    nullsec-privacy shred secret.txt 7
+    nullsec-privacy mac eth0 random
+    nullsec-privacy mac wlan0 02:de:ad:be:ef:00
+    nullsec-privacy dns-leak
+
+LICENSE:
+    NullSec Public License v1.0
+HELP
+}
+
+# Main
+case "$1" in
+    -h|--help|help|"") show_help ;;
+    audit|check) privacy_audit ;;
+    clean|wipe) full_clean ;;
+    browsers|browser) clear_browsers ;;
+    history|hist) clear_history ;;
+    traces) clear_traces ;;
+    shred|secure-delete) shift; secure_delete "$@" ;;
+    mac|macchanger) shift; change_mac "$@" ;;
+    mac-restore|restore-mac) shift; restore_mac "$@" ;;
+    hostname) shift; change_hostname "$@" ;;
+    dns-leak|dns) dns_leak_test ;;
+    webrtc) webrtc_info ;;
+    *) error "Unknown command: $1"; show_help; exit 1 ;;
+esac

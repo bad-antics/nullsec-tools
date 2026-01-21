@@ -1,0 +1,335 @@
+#!/bin/bash
+# ============================================================================
+# NullSec Log - Advanced Log Analysis & Monitoring
+# ============================================================================
+# Parse, analyze, and monitor system logs for security events
+# Licensed under NullSec Public License v1.0
+# ============================================================================
+
+VERSION="1.0.0"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+PURPLE='\033[0;35m'
+WHITE='\033[1;37m'
+DIM='\033[2m'
+NC='\033[0m'
+BOLD='\033[1m'
+
+LOG_DIR="/var/log"
+NULLSEC_LOG_DIR="$HOME/.local/share/nullsec/logs"
+mkdir -p "$NULLSEC_LOG_DIR"
+
+info() { echo -e "${CYAN}[*]${NC} $1"; }
+success() { echo -e "${GREEN}[✓]${NC} $1"; }
+warn() { echo -e "${YELLOW}[!]${NC} $1"; }
+error() { echo -e "${RED}[✗]${NC} $1"; }
+header() { echo -e "\n${CYAN}${BOLD}═══ $1 ═══${NC}\n"; }
+
+# Security event patterns
+declare -A SECURITY_PATTERNS=(
+    ["failed_login"]="Failed password|authentication failure|FAILED LOGIN"
+    ["successful_login"]="Accepted password|Accepted publickey|session opened"
+    ["sudo_usage"]="sudo:|COMMAND="
+    ["ssh_connection"]="sshd\[|ssh:"
+    ["firewall"]="UFW|iptables|nftables|BLOCK|DROP|REJECT"
+    ["service_start"]="Started|Starting|Loaded"
+    ["service_stop"]="Stopped|Stopping|Deactivated"
+    ["kernel_security"]="audit:|selinux|apparmor"
+    ["network_change"]="link up|link down|address added|address removed"
+    ["usb_device"]="usb [0-9]|New USB device"
+)
+
+# Analyze auth logs
+analyze_auth() {
+    local timeframe="${1:-1 hour ago}"
+    
+    header "Authentication Analysis"
+    
+    # Failed logins
+    local failed=$(journalctl --since "$timeframe" 2>/dev/null | grep -ciE "${SECURITY_PATTERNS[failed_login]}")
+    local success_login=$(journalctl --since "$timeframe" 2>/dev/null | grep -ciE "${SECURITY_PATTERNS[successful_login]}")
+    
+    echo -e "${WHITE}Since: $timeframe${NC}\n"
+    
+    if [[ $failed -gt 0 ]]; then
+        echo -e "${RED}✗ Failed login attempts: $failed${NC}"
+    else
+        echo -e "${GREEN}✓ No failed login attempts${NC}"
+    fi
+    
+    echo -e "${GREEN}✓ Successful logins: $success_login${NC}"
+    
+    # Show failed login details
+    if [[ $failed -gt 0 ]]; then
+        echo -e "\n${YELLOW}Failed Login Details:${NC}"
+        journalctl --since "$timeframe" 2>/dev/null | grep -iE "${SECURITY_PATTERNS[failed_login]}" | tail -10 | while read -r line; do
+            echo -e "  ${DIM}$line${NC}"
+        done
+    fi
+    
+    # SSH connections
+    echo ""
+    local ssh_conns=$(journalctl --since "$timeframe" 2>/dev/null | grep -ciE "${SECURITY_PATTERNS[ssh_connection]}")
+    echo -e "${CYAN}SSH Activity: $ssh_conns events${NC}"
+    
+    # Sudo usage
+    local sudo_events=$(journalctl --since "$timeframe" 2>/dev/null | grep -ciE "${SECURITY_PATTERNS[sudo_usage]}")
+    echo -e "${CYAN}Sudo Usage: $sudo_events commands${NC}"
+}
+
+# Analyze firewall logs
+analyze_firewall() {
+    local timeframe="${1:-1 hour ago}"
+    
+    header "Firewall Analysis"
+    
+    local fw_events=$(journalctl --since "$timeframe" 2>/dev/null | grep -iE "${SECURITY_PATTERNS[firewall]}")
+    local count=$(echo "$fw_events" | grep -c . 2>/dev/null || echo "0")
+    
+    echo -e "${WHITE}Firewall events since $timeframe: $count${NC}\n"
+    
+    if [[ $count -gt 0 ]]; then
+        # Top blocked IPs
+        echo -e "${YELLOW}Top Blocked Sources:${NC}"
+        echo "$fw_events" | grep -oE 'SRC=[0-9.]+' | sort | uniq -c | sort -rn | head -10 | while read -r cnt ip; do
+            echo -e "  $cnt - ${ip#SRC=}"
+        done
+        
+        # Top blocked ports
+        echo -e "\n${YELLOW}Top Blocked Destination Ports:${NC}"
+        echo "$fw_events" | grep -oE 'DPT=[0-9]+' | sort | uniq -c | sort -rn | head -10 | while read -r cnt port; do
+            echo -e "  $cnt - ${port#DPT=}"
+        done
+    else
+        echo -e "${GREEN}✓ No firewall blocks recorded${NC}"
+    fi
+}
+
+# Analyze service activity
+analyze_services() {
+    local timeframe="${1:-1 hour ago}"
+    
+    header "Service Activity"
+    
+    echo -e "${WHITE}Services started since $timeframe:${NC}"
+    journalctl --since "$timeframe" 2>/dev/null | grep -iE "${SECURITY_PATTERNS[service_start]}" | \
+        grep -oE 'Started [^.]+\.' | sort | uniq -c | sort -rn | head -10 | while read -r cnt svc; do
+            echo -e "  ${GREEN}▲${NC} $cnt - $svc"
+        done
+    
+    echo -e "\n${WHITE}Services stopped since $timeframe:${NC}"
+    journalctl --since "$timeframe" 2>/dev/null | grep -iE "${SECURITY_PATTERNS[service_stop]}" | \
+        grep -oE 'Stopped [^.]+\.' | sort | uniq -c | sort -rn | head -10 | while read -r cnt svc; do
+            echo -e "  ${RED}▼${NC} $cnt - $svc"
+        done
+}
+
+# Analyze kernel/security events
+analyze_kernel() {
+    local timeframe="${1:-1 hour ago}"
+    
+    header "Kernel & Security Events"
+    
+    # Kernel messages
+    local kernel_msgs=$(journalctl -k --since "$timeframe" 2>/dev/null | wc -l)
+    echo -e "${WHITE}Kernel messages: $kernel_msgs${NC}"
+    
+    # Security subsystem
+    local security=$(journalctl --since "$timeframe" 2>/dev/null | grep -ciE "${SECURITY_PATTERNS[kernel_security]}")
+    echo -e "${WHITE}Security subsystem events: $security${NC}"
+    
+    # USB devices
+    local usb=$(journalctl --since "$timeframe" 2>/dev/null | grep -ciE "${SECURITY_PATTERNS[usb_device]}")
+    if [[ $usb -gt 0 ]]; then
+        echo -e "\n${YELLOW}⚠ USB Device Events: $usb${NC}"
+        journalctl --since "$timeframe" 2>/dev/null | grep -iE "${SECURITY_PATTERNS[usb_device]}" | tail -5 | while read -r line; do
+            echo -e "  ${DIM}$line${NC}"
+        done
+    fi
+    
+    # Network changes
+    local net=$(journalctl --since "$timeframe" 2>/dev/null | grep -ciE "${SECURITY_PATTERNS[network_change]}")
+    if [[ $net -gt 0 ]]; then
+        echo -e "\n${YELLOW}Network Interface Changes: $net${NC}"
+    fi
+}
+
+# Full security report
+security_report() {
+    local timeframe="${1:-24 hours ago}"
+    local output="$NULLSEC_LOG_DIR/security-report-$(date +%Y%m%d-%H%M%S).txt"
+    
+    {
+        echo "NullSec Security Report"
+        echo "Generated: $(date)"
+        echo "Timeframe: $timeframe"
+        echo "========================================"
+        
+        analyze_auth "$timeframe"
+        analyze_firewall "$timeframe"
+        analyze_services "$timeframe"
+        analyze_kernel "$timeframe"
+        
+    } | tee "$output"
+    
+    success "Report saved to $output"
+}
+
+# Live log monitoring
+live_monitor() {
+    local pattern="${1:-.*}"
+    
+    header "Live Security Monitor"
+    echo -e "${DIM}Watching for: $pattern (Ctrl+C to stop)${NC}\n"
+    
+    journalctl -f 2>/dev/null | while read -r line; do
+        if echo "$line" | grep -qiE "$pattern"; then
+            local color=$NC
+            
+            # Color based on severity
+            echo "$line" | grep -qiE "error|fail|denied|blocked" && color=$RED
+            echo "$line" | grep -qiE "warn|warning" && color=$YELLOW
+            echo "$line" | grep -qiE "success|accepted|started" && color=$GREEN
+            
+            echo -e "${color}$line${NC}"
+        fi
+    done
+}
+
+# Search logs
+search_logs() {
+    local pattern="$1"
+    local timeframe="${2:-1 day ago}"
+    
+    [[ -z "$pattern" ]] && { error "Pattern required"; return 1; }
+    
+    header "Log Search: $pattern"
+    echo -e "${DIM}Since: $timeframe${NC}\n"
+    
+    journalctl --since "$timeframe" 2>/dev/null | grep -iE "$pattern" --color=always | tail -50
+    
+    local count=$(journalctl --since "$timeframe" 2>/dev/null | grep -ciE "$pattern")
+    echo -e "\n${CYAN}Total matches: $count${NC}"
+}
+
+# Log statistics
+log_stats() {
+    local timeframe="${1:-1 day ago}"
+    
+    header "Log Statistics"
+    echo -e "${WHITE}Since: $timeframe${NC}\n"
+    
+    # Total entries
+    local total=$(journalctl --since "$timeframe" 2>/dev/null | wc -l)
+    echo -e "Total log entries: ${CYAN}$total${NC}"
+    
+    # By priority
+    echo -e "\n${WHITE}By Priority:${NC}"
+    for p in 0 1 2 3 4 5 6 7; do
+        local cnt=$(journalctl --since "$timeframe" -p $p 2>/dev/null | wc -l)
+        local name=""
+        local color=$NC
+        case $p in
+            0) name="Emergency"; color=$RED ;;
+            1) name="Alert"; color=$RED ;;
+            2) name="Critical"; color=$RED ;;
+            3) name="Error"; color=$RED ;;
+            4) name="Warning"; color=$YELLOW ;;
+            5) name="Notice"; color=$CYAN ;;
+            6) name="Info"; color=$GREEN ;;
+            7) name="Debug"; color=$DIM ;;
+        esac
+        [[ $cnt -gt 0 ]] && echo -e "  ${color}$name ($p): $cnt${NC}"
+    done
+    
+    # Top units
+    echo -e "\n${WHITE}Top Services:${NC}"
+    journalctl --since "$timeframe" -o json 2>/dev/null | \
+        jq -r '._SYSTEMD_UNIT // "kernel"' 2>/dev/null | \
+        sort | uniq -c | sort -rn | head -10 | while read -r cnt unit; do
+            echo -e "  $cnt - $unit"
+        done
+}
+
+# Export logs
+export_logs() {
+    local timeframe="${1:-1 day ago}"
+    local format="${2:-text}"
+    local output="$NULLSEC_LOG_DIR/export-$(date +%Y%m%d-%H%M%S)"
+    
+    case "$format" in
+        json)
+            journalctl --since "$timeframe" -o json 2>/dev/null > "${output}.json"
+            success "Exported to ${output}.json"
+            ;;
+        csv)
+            echo "timestamp,priority,unit,message" > "${output}.csv"
+            journalctl --since "$timeframe" -o json 2>/dev/null | \
+                jq -r '[.__REALTIME_TIMESTAMP, .PRIORITY, ._SYSTEMD_UNIT, .MESSAGE] | @csv' 2>/dev/null >> "${output}.csv"
+            success "Exported to ${output}.csv"
+            ;;
+        *)
+            journalctl --since "$timeframe" 2>/dev/null > "${output}.txt"
+            success "Exported to ${output}.txt"
+            ;;
+    esac
+}
+
+# Help
+show_help() {
+    cat << 'HELP'
+NullSec Log - Advanced Log Analysis & Monitoring
+
+USAGE:
+    nullsec-log <command> [options]
+
+COMMANDS:
+    auth [timeframe]        Analyze authentication events
+    firewall [timeframe]    Analyze firewall logs
+    services [timeframe]    Analyze service activity
+    kernel [timeframe]      Analyze kernel & security events
+    report [timeframe]      Generate full security report
+    live [pattern]          Live monitor with pattern filter
+    search <pattern> [time] Search logs for pattern
+    stats [timeframe]       Log statistics
+    export [time] [format]  Export logs (text, json, csv)
+
+TIMEFRAME EXAMPLES:
+    "1 hour ago"
+    "30 minutes ago"
+    "1 day ago"
+    "2024-01-15"
+    "2024-01-15 14:00"
+
+EXAMPLES:
+    nullsec-log auth "2 hours ago"
+    nullsec-log firewall
+    nullsec-log live "ssh|login"
+    nullsec-log search "error" "1 day ago"
+    nullsec-log report "24 hours ago"
+    nullsec-log export "1 week ago" json
+
+LICENSE:
+    NullSec Public License v1.0
+HELP
+}
+
+# Main
+case "$1" in
+    -h|--help|help|"") show_help ;;
+    auth) shift; analyze_auth "$@" ;;
+    firewall|fw) shift; analyze_firewall "$@" ;;
+    services|svc) shift; analyze_services "$@" ;;
+    kernel|sec) shift; analyze_kernel "$@" ;;
+    report) shift; security_report "$@" ;;
+    live|watch|monitor) shift; live_monitor "$@" ;;
+    search|find|grep) shift; search_logs "$@" ;;
+    stats|statistics) shift; log_stats "$@" ;;
+    export) shift; export_logs "$@" ;;
+    *) error "Unknown command: $1"; show_help; exit 1 ;;
+esac

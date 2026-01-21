@@ -1,0 +1,360 @@
+#!/bin/bash
+# ============================================================================
+# NullSec Sandbox - Isolated Execution Environment
+# ============================================================================
+# Run untrusted commands/scripts in isolated namespaces
+# Licensed under NullSec Public License v1.0
+# ============================================================================
+
+VERSION="1.0.0"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+WHITE='\033[1;37m'
+NC='\033[0m'
+BOLD='\033[1m'
+
+SANDBOX_DIR="$HOME/.local/share/nullsec/sandbox"
+SANDBOX_ROOT="$SANDBOX_DIR/root"
+SANDBOX_TMP="$SANDBOX_DIR/tmp"
+
+info() { echo -e "${CYAN}[*]${NC} $1"; }
+success() { echo -e "${GREEN}[✓]${NC} $1"; }
+warn() { echo -e "${YELLOW}[!]${NC} $1"; }
+error() { echo -e "${RED}[✗]${NC} $1"; }
+
+# Check prerequisites
+check_prereqs() {
+    local missing=()
+    
+    command -v unshare &>/dev/null || missing+=("util-linux (unshare)")
+    command -v firejail &>/dev/null || missing+=("firejail")
+    command -v bubblewrap &>/dev/null || missing+=("bubblewrap")
+    
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        warn "Optional dependencies not found: ${missing[*]}"
+        warn "Basic sandboxing available, advanced features limited"
+    fi
+}
+
+# Initialize sandbox environment
+init_sandbox() {
+    info "Initializing sandbox environment..."
+    
+    mkdir -p "$SANDBOX_ROOT"/{bin,lib,lib64,usr,etc,tmp,proc,sys,dev,home}
+    mkdir -p "$SANDBOX_TMP"
+    
+    # Copy essential binaries
+    for bin in /bin/sh /bin/bash /usr/bin/env /bin/ls /bin/cat /bin/echo; do
+        [[ -f "$bin" ]] && cp "$bin" "$SANDBOX_ROOT${bin%/*}/" 2>/dev/null
+    done
+    
+    # Copy essential libs (basic)
+    cp -L /lib/x86_64-linux-gnu/libc.so.* "$SANDBOX_ROOT/lib/" 2>/dev/null
+    cp -L /lib64/ld-linux-x86-64.so.* "$SANDBOX_ROOT/lib64/" 2>/dev/null
+    
+    success "Sandbox initialized at $SANDBOX_ROOT"
+}
+
+# Run with namespace isolation
+run_namespaced() {
+    local cmd="$@"
+    
+    info "Running in isolated namespace..."
+    warn "Network, PID, and mount namespaces isolated"
+    
+    # Create temporary overlay
+    local overlay="$SANDBOX_TMP/overlay-$$"
+    mkdir -p "$overlay"/{upper,work,merged}
+    
+    # Run with unshare
+    unshare --user --map-root-user --net --pid --fork --mount-proc \
+        bash -c "$cmd" 2>&1
+    
+    local exit_code=$?
+    
+    # Cleanup
+    rm -rf "$overlay"
+    
+    return $exit_code
+}
+
+# Run with firejail
+run_firejail() {
+    local profile="${1:-default}"
+    shift
+    local cmd="$@"
+    
+    if ! command -v firejail &>/dev/null; then
+        error "Firejail not installed"
+        return 1
+    fi
+    
+    info "Running with Firejail sandbox (profile: $profile)..."
+    
+    local firejail_opts=(
+        --quiet
+        --noprofile
+        --private
+        --private-tmp
+        --private-dev
+        --seccomp
+        --caps.drop=all
+        --nonewprivs
+        --nogroups
+    )
+    
+    case "$profile" in
+        strict)
+            firejail_opts+=(--net=none --no3d --nodvd --nosound --notv)
+            ;;
+        network)
+            # Allow network
+            ;;
+        *)
+            firejail_opts+=(--net=none)
+            ;;
+    esac
+    
+    firejail "${firejail_opts[@]}" -- bash -c "$cmd"
+}
+
+# Run with bubblewrap
+run_bwrap() {
+    local cmd="$@"
+    
+    if ! command -v bwrap &>/dev/null; then
+        error "Bubblewrap not installed"
+        return 1
+    fi
+    
+    info "Running with Bubblewrap sandbox..."
+    
+    bwrap \
+        --ro-bind /usr /usr \
+        --ro-bind /lib /lib \
+        --ro-bind /lib64 /lib64 \
+        --ro-bind /bin /bin \
+        --symlink usr/lib /lib \
+        --proc /proc \
+        --dev /dev \
+        --tmpfs /tmp \
+        --tmpfs /home \
+        --unshare-all \
+        --die-with-parent \
+        --new-session \
+        -- bash -c "$cmd"
+}
+
+# Quick sandbox (auto-select best method)
+quick_sandbox() {
+    local cmd="$@"
+    
+    [[ -z "$cmd" ]] && { error "Command required"; return 1; }
+    
+    if command -v firejail &>/dev/null; then
+        run_firejail default "$cmd"
+    elif command -v bwrap &>/dev/null; then
+        run_bwrap "$cmd"
+    else
+        run_namespaced "$cmd"
+    fi
+}
+
+# Analyze command safety
+analyze_command() {
+    local cmd="$1"
+    
+    info "Analyzing command safety..."
+    
+    local risk=0
+    local warnings=()
+    
+    # Dangerous patterns
+    [[ "$cmd" =~ rm[[:space:]]+-rf ]] && { warnings+=("Recursive force delete detected"); ((risk+=30)); }
+    [[ "$cmd" =~ /dev/sd[a-z] ]] && { warnings+=("Direct disk access detected"); ((risk+=40)); }
+    [[ "$cmd" =~ mkfs\. ]] && { warnings+=("Filesystem creation detected"); ((risk+=50)); }
+    [[ "$cmd" =~ dd[[:space:]] ]] && { warnings+=("Raw disk operation detected"); ((risk+=30)); }
+    [[ "$cmd" =~ chmod[[:space:]]+777 ]] && { warnings+=("Overly permissive chmod"); ((risk+=20)); }
+    [[ "$cmd" =~ wget|curl ]] && { warnings+=("Network download detected"); ((risk+=15)); }
+    [[ "$cmd" =~ eval|exec ]] && { warnings+=("Code execution detected"); ((risk+=25)); }
+    [[ "$cmd" =~ \$\( ]] && { warnings+=("Command substitution detected"); ((risk+=10)); }
+    [[ "$cmd" =~ \| ]] && { warnings+=("Pipe detected"); ((risk+=5)); }
+    [[ "$cmd" =~ sudo|su[[:space:]] ]] && { warnings+=("Privilege escalation attempt"); ((risk+=40)); }
+    [[ "$cmd" =~ /etc/passwd|/etc/shadow ]] && { warnings+=("Sensitive file access"); ((risk+=35)); }
+    [[ "$cmd" =~ iptables|firewall ]] && { warnings+=("Firewall modification"); ((risk+=30)); }
+    [[ "$cmd" =~ systemctl|service ]] && { warnings+=("Service management"); ((risk+=20)); }
+    
+    echo ""
+    echo -e "${WHITE}Command: ${NC}$cmd"
+    echo ""
+    
+    if [[ ${#warnings[@]} -eq 0 ]]; then
+        echo -e "${GREEN}✓ No obvious risks detected${NC}"
+    else
+        echo -e "${YELLOW}Warnings:${NC}"
+        for w in "${warnings[@]}"; do
+            echo -e "  ${YELLOW}⚠${NC} $w"
+        done
+    fi
+    
+    echo ""
+    echo -e "${WHITE}Risk Score: ${NC}"
+    if [[ $risk -lt 20 ]]; then
+        echo -e "${GREEN}LOW ($risk/100)${NC}"
+    elif [[ $risk -lt 50 ]]; then
+        echo -e "${YELLOW}MEDIUM ($risk/100)${NC}"
+    else
+        echo -e "${RED}HIGH ($risk/100)${NC}"
+    fi
+    
+    echo ""
+    if [[ $risk -ge 30 ]]; then
+        echo -e "${CYAN}Recommendation: Run in sandbox${NC}"
+        echo -e "  ${DIM}nullsec-sandbox run \"$cmd\"${NC}"
+    fi
+}
+
+# Create chroot sandbox
+create_chroot() {
+    local name="${1:-sandbox}"
+    local base="$SANDBOX_DIR/$name"
+    
+    if [[ -d "$base" ]]; then
+        warn "Sandbox '$name' already exists"
+        return 1
+    fi
+    
+    info "Creating chroot sandbox: $name"
+    
+    mkdir -p "$base"/{bin,lib,lib64,usr/bin,etc,tmp,proc,dev,home/sandbox}
+    
+    # Copy shell and essential tools
+    local tools=(bash sh ls cat echo mkdir rm cp mv pwd env)
+    for tool in "${tools[@]}"; do
+        local path=$(which "$tool" 2>/dev/null)
+        if [[ -f "$path" ]]; then
+            cp "$path" "$base$(dirname "$path")/"
+            # Copy library dependencies
+            ldd "$path" 2>/dev/null | grep -oE '/[^ ]+' | while read -r lib; do
+                [[ -f "$lib" ]] && cp -L "$lib" "$base$(dirname "$lib")/" 2>/dev/null
+            done
+        fi
+    done
+    
+    # Basic /etc files
+    echo "root:x:0:0:root:/root:/bin/bash" > "$base/etc/passwd"
+    echo "sandbox:x:1000:1000:sandbox:/home/sandbox:/bin/bash" >> "$base/etc/passwd"
+    
+    success "Chroot sandbox created at $base"
+    info "Enter with: sudo chroot $base /bin/bash"
+}
+
+# List sandboxes
+list_sandboxes() {
+    info "Available sandboxes:"
+    
+    if [[ -d "$SANDBOX_DIR" ]]; then
+        for d in "$SANDBOX_DIR"/*/; do
+            [[ -d "$d" ]] && echo "  - $(basename "$d")"
+        done
+    else
+        echo "  (none)"
+    fi
+}
+
+# Clean sandbox
+clean_sandbox() {
+    local name="${1:-all}"
+    
+    if [[ "$name" == "all" ]]; then
+        warn "Removing all sandboxes..."
+        rm -rf "$SANDBOX_DIR"
+        success "All sandboxes removed"
+    else
+        if [[ -d "$SANDBOX_DIR/$name" ]]; then
+            rm -rf "$SANDBOX_DIR/$name"
+            success "Sandbox '$name' removed"
+        else
+            error "Sandbox '$name' not found"
+        fi
+    fi
+}
+
+# Shell in sandbox
+sandbox_shell() {
+    info "Starting sandboxed shell..."
+    
+    if command -v firejail &>/dev/null; then
+        firejail --private --private-tmp --quiet bash
+    elif command -v bwrap &>/dev/null; then
+        run_bwrap "bash"
+    else
+        warn "No sandbox tool available, running in namespace isolation"
+        run_namespaced "bash"
+    fi
+}
+
+# Help
+show_help() {
+    cat << 'HELP'
+NullSec Sandbox - Isolated Execution Environment
+
+USAGE:
+    nullsec-sandbox <command> [options]
+
+COMMANDS:
+    run <command>           Run command in sandbox (auto-select)
+    firejail <cmd>         Run with Firejail
+    bwrap <cmd>            Run with Bubblewrap
+    namespace <cmd>        Run with namespace isolation
+    analyze <cmd>          Analyze command safety
+    shell                  Start sandboxed shell
+    create <name>          Create chroot sandbox
+    list                   List sandboxes
+    clean [name|all]       Remove sandbox(es)
+    init                   Initialize sandbox environment
+
+PROFILES (for firejail):
+    default                No network, private dirs
+    strict                 Maximum isolation
+    network                Allow network access
+
+EXAMPLES:
+    nullsec-sandbox run "ls -la /"
+    nullsec-sandbox firejail "wget http://example.com"
+    nullsec-sandbox analyze "rm -rf /"
+    nullsec-sandbox shell
+    nullsec-sandbox create mytest
+
+NOTES:
+    - Requires: firejail, bubblewrap, or util-linux
+    - Some features need root privileges
+    - Chroot sandboxes need sudo to enter
+
+LICENSE:
+    NullSec Public License v1.0
+HELP
+}
+
+# Main
+check_prereqs
+
+case "$1" in
+    -h|--help|help|"") show_help ;;
+    run|exec) shift; quick_sandbox "$@" ;;
+    firejail|fj) shift; run_firejail "$@" ;;
+    bwrap|bubblewrap) shift; run_bwrap "$@" ;;
+    namespace|ns|unshare) shift; run_namespaced "$@" ;;
+    analyze|check|scan) shift; analyze_command "$*" ;;
+    shell|sh) sandbox_shell ;;
+    create|new) shift; create_chroot "$@" ;;
+    list|ls) list_sandboxes ;;
+    clean|rm|remove) shift; clean_sandbox "$@" ;;
+    init|setup) init_sandbox ;;
+    *) error "Unknown command: $1"; show_help; exit 1 ;;
+esac

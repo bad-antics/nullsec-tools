@@ -1,0 +1,303 @@
+#!/bin/bash
+# ============================================================================
+# NullSec Monitor - Real-time System Monitoring Dashboard
+# ============================================================================
+# TUI system monitor with security focus
+# Licensed under NullSec Public License v1.0
+# ============================================================================
+
+VERSION="1.0.0"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+PURPLE='\033[0;35m'
+WHITE='\033[1;37m'
+DIM='\033[2m'
+NC='\033[0m'
+BOLD='\033[1m'
+
+# Clear and position cursor
+clear_screen() { printf '\033[2J\033[H'; }
+move_cursor() { printf '\033[%d;%dH' "$1" "$2"; }
+hide_cursor() { printf '\033[?25l'; }
+show_cursor() { printf '\033[?25h'; }
+
+# Cleanup on exit
+cleanup() {
+    show_cursor
+    clear_screen
+    exit 0
+}
+trap cleanup EXIT INT TERM
+
+# Progress bar
+progress_bar() {
+    local percent=$1
+    local width=${2:-30}
+    local filled=$((percent * width / 100))
+    local empty=$((width - filled))
+    local color=$GREEN
+    
+    [[ $percent -gt 70 ]] && color=$YELLOW
+    [[ $percent -gt 90 ]] && color=$RED
+    
+    printf "${color}"
+    printf '█%.0s' $(seq 1 $filled 2>/dev/null) || printf '%*s' $filled '' | tr ' ' '█'
+    printf "${DIM}"
+    printf '░%.0s' $(seq 1 $empty 2>/dev/null) || printf '%*s' $empty '' | tr ' ' '░'
+    printf "${NC} %3d%%" "$percent"
+}
+
+# Get CPU usage
+get_cpu() {
+    local cpu_line=$(head -1 /proc/stat)
+    local user=$(echo "$cpu_line" | awk '{print $2}')
+    local nice=$(echo "$cpu_line" | awk '{print $3}')
+    local system=$(echo "$cpu_line" | awk '{print $4}')
+    local idle=$(echo "$cpu_line" | awk '{print $5}')
+    local iowait=$(echo "$cpu_line" | awk '{print $6}')
+    
+    local total=$((user + nice + system + idle + iowait))
+    local active=$((user + nice + system))
+    
+    if [[ -f /tmp/nullsec_cpu_prev ]]; then
+        local prev=$(cat /tmp/nullsec_cpu_prev)
+        local prev_total=$(echo "$prev" | cut -d: -f1)
+        local prev_active=$(echo "$prev" | cut -d: -f2)
+        
+        local diff_total=$((total - prev_total))
+        local diff_active=$((active - prev_active))
+        
+        [[ $diff_total -gt 0 ]] && echo $((diff_active * 100 / diff_total)) || echo 0
+    else
+        echo 0
+    fi
+    
+    echo "$total:$active" > /tmp/nullsec_cpu_prev
+}
+
+# Get memory usage
+get_memory() {
+    local mem_info=$(cat /proc/meminfo)
+    local total=$(echo "$mem_info" | grep "^MemTotal:" | awk '{print $2}')
+    local available=$(echo "$mem_info" | grep "^MemAvailable:" | awk '{print $2}')
+    local used=$((total - available))
+    echo $((used * 100 / total))
+}
+
+# Get disk usage
+get_disk() {
+    df / 2>/dev/null | tail -1 | awk '{print $5}' | tr -d '%'
+}
+
+# Get network stats
+get_network() {
+    local iface=$(ip route | grep default | awk '{print $5}' | head -1)
+    [[ -z "$iface" ]] && { echo "0:0"; return; }
+    
+    local stats=$(cat "/sys/class/net/$iface/statistics/rx_bytes" "/sys/class/net/$iface/statistics/tx_bytes" 2>/dev/null)
+    local rx=$(echo "$stats" | head -1)
+    local tx=$(echo "$stats" | tail -1)
+    
+    if [[ -f /tmp/nullsec_net_prev ]]; then
+        local prev=$(cat /tmp/nullsec_net_prev)
+        local prev_rx=$(echo "$prev" | cut -d: -f1)
+        local prev_tx=$(echo "$prev" | cut -d: -f2)
+        
+        local rx_rate=$(((rx - prev_rx) / 1024))
+        local tx_rate=$(((tx - prev_tx) / 1024))
+        
+        echo "$rx_rate:$tx_rate"
+    else
+        echo "0:0"
+    fi
+    
+    echo "$rx:$tx" > /tmp/nullsec_net_prev
+}
+
+# Get top processes
+get_top_processes() {
+    ps aux --sort=-%cpu 2>/dev/null | head -6 | tail -5 | \
+    awk '{printf "  %-12s %5s%% %5s%%\n", substr($11,1,12), $3, $4}'
+}
+
+# Get active connections
+get_connections() {
+    ss -tn 2>/dev/null | grep ESTAB | wc -l
+}
+
+# Get listening ports
+get_listening() {
+    ss -tln 2>/dev/null | grep LISTEN | wc -l
+}
+
+# Get failed logins (last hour)
+get_failed_logins() {
+    journalctl --since "1 hour ago" 2>/dev/null | grep -c "Failed password" || echo "0"
+}
+
+# Draw header
+draw_header() {
+    local width=$(tput cols)
+    local title="NULLSEC MONITOR v$VERSION"
+    local time=$(date '+%Y-%m-%d %H:%M:%S')
+    
+    printf "${CYAN}╔"
+    printf '═%.0s' $(seq 1 $((width-2)))
+    printf "╗${NC}\n"
+    
+    printf "${CYAN}║${WHITE}${BOLD} %-$((width-4))s ${CYAN}║${NC}\n" "$title"
+    printf "${CYAN}║${DIM} %-$((width-4))s ${CYAN}║${NC}\n" "$time"
+    
+    printf "${CYAN}╠"
+    printf '═%.0s' $(seq 1 $((width-2)))
+    printf "╣${NC}\n"
+}
+
+# Draw section
+draw_section() {
+    local title="$1"
+    local width=$(tput cols)
+    
+    printf "${CYAN}║${PURPLE}${BOLD} %-$((width-4))s ${CYAN}║${NC}\n" "═══ $title ═══"
+}
+
+# Draw line
+draw_line() {
+    local content="$1"
+    local width=$(tput cols)
+    printf "${CYAN}║${NC} %-$((width-4))s ${CYAN}║${NC}\n" "$content"
+}
+
+# Draw footer
+draw_footer() {
+    local width=$(tput cols)
+    printf "${CYAN}╚"
+    printf '═%.0s' $(seq 1 $((width-2)))
+    printf "╝${NC}\n"
+    printf "${DIM}Press 'q' to quit | 'r' to refresh${NC}"
+}
+
+# Main display
+display() {
+    clear_screen
+    hide_cursor
+    
+    local cpu=$(get_cpu)
+    sleep 0.1
+    cpu=$(get_cpu)
+    local mem=$(get_memory)
+    local disk=$(get_disk)
+    local net=$(get_network)
+    local rx_rate=$(echo "$net" | cut -d: -f1)
+    local tx_rate=$(echo "$net" | cut -d: -f2)
+    local conns=$(get_connections)
+    local listening=$(get_listening)
+    local failed=$(get_failed_logins)
+    
+    draw_header
+    
+    # System Resources
+    draw_section "System Resources"
+    printf "${CYAN}║${NC}   CPU:    $(progress_bar $cpu 35)   ${CYAN}║${NC}\n"
+    printf "${CYAN}║${NC}   Memory: $(progress_bar $mem 35)   ${CYAN}║${NC}\n"
+    printf "${CYAN}║${NC}   Disk:   $(progress_bar $disk 35)   ${CYAN}║${NC}\n"
+    draw_line ""
+    
+    # Network
+    draw_section "Network"
+    draw_line "   ↓ Download: ${rx_rate} KB/s"
+    draw_line "   ↑ Upload:   ${tx_rate} KB/s"
+    draw_line "   Connections: $conns active | $listening listening"
+    draw_line ""
+    
+    # Security
+    draw_section "Security Status"
+    if [[ $failed -eq 0 ]]; then
+        draw_line "   ${GREEN}✓${NC} No failed login attempts (last hour)"
+    else
+        draw_line "   ${RED}⚠${NC} $failed failed login attempts (last hour)"
+    fi
+    
+    # Firewall status
+    local fw_status="${RED}Inactive${NC}"
+    if ufw status 2>/dev/null | grep -q "active"; then
+        fw_status="${GREEN}Active (UFW)${NC}"
+    elif iptables -L 2>/dev/null | grep -q "DROP\|REJECT"; then
+        fw_status="${GREEN}Active (iptables)${NC}"
+    fi
+    printf "${CYAN}║${NC}   Firewall: $fw_status                              ${CYAN}║${NC}\n"
+    draw_line ""
+    
+    # Top Processes
+    draw_section "Top Processes (CPU)"
+    draw_line "   Process        CPU    MEM"
+    draw_line "   ─────────────────────────────"
+    while read -r line; do
+        draw_line "$line"
+    done <<< "$(get_top_processes)"
+    draw_line ""
+    
+    # System Info
+    draw_section "System Info"
+    draw_line "   Hostname: $(hostname)"
+    draw_line "   Uptime:   $(uptime -p 2>/dev/null || uptime | awk -F'up ' '{print $2}' | cut -d',' -f1)"
+    draw_line "   Load:     $(cat /proc/loadavg | cut -d' ' -f1-3)"
+    draw_line ""
+    
+    draw_footer
+}
+
+# Main loop
+main() {
+    local refresh=1
+    
+    while true; do
+        display
+        
+        # Read input with timeout
+        if read -rsn1 -t "$refresh" key; then
+            case "$key" in
+                q|Q) break ;;
+                r|R) continue ;;
+                +) refresh=$((refresh > 1 ? refresh - 1 : 1)) ;;
+                -) refresh=$((refresh + 1)) ;;
+            esac
+        fi
+    done
+    
+    show_cursor
+}
+
+# Help
+show_help() {
+    cat << 'HELP'
+NullSec Monitor - Real-time System Monitoring
+
+USAGE:
+    nullsec-monitor [options]
+
+OPTIONS:
+    -h, --help      Show this help
+    -1              Single run (no loop)
+
+CONTROLS:
+    q               Quit
+    r               Refresh now
+    +               Decrease refresh interval
+    -               Increase refresh interval
+
+LICENSE:
+    NullSec Public License v1.0
+HELP
+}
+
+case "$1" in
+    -h|--help) show_help ;;
+    -1|--once) display; show_cursor ;;
+    *) main ;;
+esac

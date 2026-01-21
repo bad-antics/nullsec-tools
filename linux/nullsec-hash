@@ -1,0 +1,309 @@
+#!/bin/bash
+# ============================================================================
+# NullSec Hash - File Hashing & Verification Tool
+# ============================================================================
+# Multi-algorithm hashing with verification and integrity checking
+# Licensed under NullSec Public License v1.0
+# ============================================================================
+
+VERSION="1.0.0"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+WHITE='\033[1;37m'
+NC='\033[0m'
+BOLD='\033[1m'
+
+# Supported algorithms
+ALGORITHMS=("md5" "sha1" "sha256" "sha384" "sha512" "blake2b")
+
+info() { echo -e "${CYAN}[*]${NC} $1"; }
+success() { echo -e "${GREEN}[✓]${NC} $1"; }
+warn() { echo -e "${YELLOW}[!]${NC} $1"; }
+error() { echo -e "${RED}[✗]${NC} $1"; }
+
+# Calculate hash
+calc_hash() {
+    local file="$1"
+    local algo="$2"
+    
+    case "$algo" in
+        md5) md5sum "$file" 2>/dev/null | awk '{print $1}' ;;
+        sha1) sha1sum "$file" 2>/dev/null | awk '{print $1}' ;;
+        sha256) sha256sum "$file" 2>/dev/null | awk '{print $1}' ;;
+        sha384) sha384sum "$file" 2>/dev/null | awk '{print $1}' ;;
+        sha512) sha512sum "$file" 2>/dev/null | awk '{print $1}' ;;
+        blake2b) b2sum "$file" 2>/dev/null | awk '{print $1}' ;;
+        *) error "Unknown algorithm: $algo"; return 1 ;;
+    esac
+}
+
+# Hash a file with all algorithms
+hash_all() {
+    local file="$1"
+    
+    [[ ! -f "$file" ]] && { error "File not found: $file"; return 1; }
+    
+    echo -e "\n${CYAN}${BOLD}════════════════════════════════════════════════════════════${NC}"
+    echo -e "${WHITE}${BOLD}File: ${NC}$file"
+    echo -e "${WHITE}${BOLD}Size: ${NC}$(stat -c %s "$file" 2>/dev/null || stat -f %z "$file") bytes"
+    echo -e "${CYAN}${BOLD}════════════════════════════════════════════════════════════${NC}\n"
+    
+    for algo in "${ALGORITHMS[@]}"; do
+        local hash=$(calc_hash "$file" "$algo")
+        if [[ -n "$hash" ]]; then
+            printf "${GREEN}%-10s${NC} %s\n" "${algo^^}:" "$hash"
+        fi
+    done
+    echo ""
+}
+
+# Hash with specific algorithm
+hash_single() {
+    local file="$1"
+    local algo="${2:-sha256}"
+    
+    [[ ! -f "$file" ]] && { error "File not found: $file"; return 1; }
+    
+    local hash=$(calc_hash "$file" "$algo")
+    if [[ -n "$hash" ]]; then
+        echo "$hash  $file"
+    else
+        error "Failed to calculate hash"
+        return 1
+    fi
+}
+
+# Verify hash
+verify_hash() {
+    local file="$1"
+    local expected="$2"
+    local algo="${3:-auto}"
+    
+    [[ ! -f "$file" ]] && { error "File not found: $file"; return 1; }
+    
+    # Auto-detect algorithm based on hash length
+    if [[ "$algo" == "auto" ]]; then
+        local len=${#expected}
+        case $len in
+            32) algo="md5" ;;
+            40) algo="sha1" ;;
+            64) algo="sha256" ;;
+            96) algo="sha384" ;;
+            128) algo="sha512" ;;
+            *) algo="sha256" ;;
+        esac
+        info "Auto-detected algorithm: ${algo^^}"
+    fi
+    
+    local actual=$(calc_hash "$file" "$algo")
+    
+    # Case-insensitive compare
+    if [[ "${actual,,}" == "${expected,,}" ]]; then
+        success "Hash verified! File integrity confirmed."
+        echo -e "  File:     $file"
+        echo -e "  Algorithm: ${algo^^}"
+        echo -e "  Hash:     $actual"
+        return 0
+    else
+        error "Hash mismatch! File may be corrupted or tampered."
+        echo -e "  File:     $file"
+        echo -e "  Expected: $expected"
+        echo -e "  Actual:   $actual"
+        return 1
+    fi
+}
+
+# Generate hashfile (like sha256sum output)
+generate_hashfile() {
+    local algo="${1:-sha256}"
+    shift
+    local files=("$@")
+    
+    if [[ ${#files[@]} -eq 0 ]]; then
+        error "No files specified"
+        return 1
+    fi
+    
+    for file in "${files[@]}"; do
+        if [[ -f "$file" ]]; then
+            local hash=$(calc_hash "$file" "$algo")
+            echo "$hash  $file"
+        else
+            warn "Skipping: $file (not found)"
+        fi
+    done
+}
+
+# Verify from hashfile
+verify_hashfile() {
+    local hashfile="$1"
+    local algo="${2:-sha256}"
+    
+    [[ ! -f "$hashfile" ]] && { error "Hashfile not found: $hashfile"; return 1; }
+    
+    local passed=0
+    local failed=0
+    
+    info "Verifying hashes from $hashfile..."
+    echo ""
+    
+    while IFS= read -r line; do
+        [[ -z "$line" || "$line" =~ ^# ]] && continue
+        
+        local hash=$(echo "$line" | awk '{print $1}')
+        local file=$(echo "$line" | awk '{$1=""; print $0}' | sed 's/^ *//')
+        
+        # Handle different formats
+        [[ "$file" == "" ]] && file=$(echo "$line" | cut -d'*' -f2)
+        
+        if [[ ! -f "$file" ]]; then
+            echo -e "${RED}MISSING${NC}: $file"
+            ((failed++))
+            continue
+        fi
+        
+        local actual=$(calc_hash "$file" "$algo")
+        if [[ "${actual,,}" == "${hash,,}" ]]; then
+            echo -e "${GREEN}OK${NC}:      $file"
+            ((passed++))
+        else
+            echo -e "${RED}FAILED${NC}:  $file"
+            ((failed++))
+        fi
+    done < "$hashfile"
+    
+    echo ""
+    echo -e "Results: ${GREEN}$passed passed${NC}, ${RED}$failed failed${NC}"
+    
+    [[ $failed -eq 0 ]]
+}
+
+# Hash string
+hash_string() {
+    local string="$1"
+    local algo="${2:-sha256}"
+    
+    case "$algo" in
+        md5) echo -n "$string" | md5sum | awk '{print $1}' ;;
+        sha1) echo -n "$string" | sha1sum | awk '{print $1}' ;;
+        sha256) echo -n "$string" | sha256sum | awk '{print $1}' ;;
+        sha384) echo -n "$string" | sha384sum | awk '{print $1}' ;;
+        sha512) echo -n "$string" | sha512sum | awk '{print $1}' ;;
+        blake2b) echo -n "$string" | b2sum | awk '{print $1}' ;;
+        *) error "Unknown algorithm: $algo"; return 1 ;;
+    esac
+}
+
+# Compare two files
+compare_files() {
+    local file1="$1"
+    local file2="$2"
+    local algo="${3:-sha256}"
+    
+    [[ ! -f "$file1" ]] && { error "File not found: $file1"; return 1; }
+    [[ ! -f "$file2" ]] && { error "File not found: $file2"; return 1; }
+    
+    local hash1=$(calc_hash "$file1" "$algo")
+    local hash2=$(calc_hash "$file2" "$algo")
+    
+    echo -e "\n${CYAN}Comparing files using ${algo^^}:${NC}"
+    echo -e "  File 1: $file1"
+    echo -e "  Hash:   $hash1"
+    echo -e "  File 2: $file2"
+    echo -e "  Hash:   $hash2"
+    echo ""
+    
+    if [[ "$hash1" == "$hash2" ]]; then
+        success "Files are identical"
+        return 0
+    else
+        error "Files differ"
+        return 1
+    fi
+}
+
+# Directory integrity
+dir_integrity() {
+    local dir="$1"
+    local output="${2:-checksums.txt}"
+    local algo="${3:-sha256}"
+    
+    [[ ! -d "$dir" ]] && { error "Directory not found: $dir"; return 1; }
+    
+    info "Generating integrity manifest for $dir..."
+    
+    find "$dir" -type f -print0 2>/dev/null | while IFS= read -r -d '' file; do
+        local hash=$(calc_hash "$file" "$algo")
+        echo "$hash  $file"
+    done > "$output"
+    
+    local count=$(wc -l < "$output")
+    success "Generated $output with $count file hashes"
+}
+
+# Help
+show_help() {
+    cat << 'HELP'
+NullSec Hash - File Hashing & Verification Tool
+
+USAGE:
+    nullsec-hash <command> [options]
+
+COMMANDS:
+    all <file>                      Hash file with all algorithms
+    <algo> <file>                   Hash file with specific algorithm
+    verify <file> <hash> [algo]     Verify file against hash
+    verify-file <hashfile> [algo]   Verify files from hashfile
+    generate <algo> <files...>      Generate hashfile for files
+    string <string> [algo]          Hash a string
+    compare <file1> <file2> [algo]  Compare two files
+    dir <directory> [output] [algo] Generate integrity manifest
+
+ALGORITHMS:
+    md5, sha1, sha256, sha384, sha512, blake2b
+
+EXAMPLES:
+    nullsec-hash all myfile.zip
+    nullsec-hash sha256 document.pdf
+    nullsec-hash verify file.iso abc123...
+    nullsec-hash generate sha256 *.tar.gz > checksums.txt
+    nullsec-hash verify-file checksums.txt
+    nullsec-hash string "password123" md5
+    nullsec-hash compare old.bin new.bin
+    nullsec-hash dir /etc security-manifest.txt
+
+LICENSE:
+    NullSec Public License v1.0
+HELP
+}
+
+# Main
+case "$1" in
+    -h|--help|help|"") show_help ;;
+    all) shift; hash_all "$@" ;;
+    verify) shift; verify_hash "$@" ;;
+    verify-file) shift; verify_hashfile "$@" ;;
+    generate|gen) shift; generate_hashfile "$@" ;;
+    string|str) shift; hash_string "$@" ;;
+    compare|cmp) shift; compare_files "$@" ;;
+    dir|directory) shift; dir_integrity "$@" ;;
+    md5|sha1|sha256|sha384|sha512|blake2b) 
+        algo="$1"; shift
+        hash_single "$1" "$algo"
+        ;;
+    *) 
+        # Assume it's a file, hash with all
+        if [[ -f "$1" ]]; then
+            hash_all "$1"
+        else
+            error "Unknown command: $1"
+            show_help
+            exit 1
+        fi
+        ;;
+esac
