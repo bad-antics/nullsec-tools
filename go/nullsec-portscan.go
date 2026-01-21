@@ -1,6 +1,6 @@
 // NullSec Port Scanner
 // High-performance concurrent port scanner written in Go
-// Author: bad-antics | Twitter: @AnonAntics | Discord: discord.gg/killers
+// Author: bad-antics | Twitter: bad-antics | Discord: discord.gg/killers
 
 package main
 
@@ -25,7 +25,7 @@ const banner = `
 ║     ██║ ╚████║╚██████╔╝███████╗███████╗███████║███████╗   ║
 ║     ╚═╝  ╚═══╝ ╚═════╝ ╚══════╝╚══════╝╚══════╝╚══════╝   ║
 ║                    PORT SCANNER (Go)                       ║
-║            bad-antics | @AnonAntics | discord.gg/killers  ║
+║            bad-antics | bad-antics | discord.gg/killers  ║
 ╚═══════════════════════════════════════════════════════════╝
 `
 

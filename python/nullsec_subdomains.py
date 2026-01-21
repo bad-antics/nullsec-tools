@@ -2,7 +2,7 @@
 """
 NullSec Subdomain Enumerator
 Fast async subdomain discovery tool
-Author: bad-antics | Twitter: @AnonAntics | Discord: discord.gg/killers
+Author: bad-antics | Twitter: bad-antics | Discord: discord.gg/killers
 """
 
 import asyncio
@@ -22,7 +22,7 @@ BANNER = """
 ║     ██║ ╚████║╚██████╔╝███████╗███████╗███████║███████╗   ║
 ║     ╚═╝  ╚═══╝ ╚═════╝ ╚══════╝╚══════╝╚══════╝╚══════╝   ║
 ║                  SUBDOMAIN ENUMERATOR                      ║
-║            bad-antics | @AnonAntics | discord.gg/killers  ║
+║            bad-antics | bad-antics | discord.gg/killers  ║
 ╚═══════════════════════════════════════════════════════════╝
 """
 

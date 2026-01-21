@@ -1,7 +1,7 @@
 /*
  * NullSec Shellcode Loader
  * Memory injection and shellcode execution toolkit
- * Author: bad-antics | Twitter: @AnonAntics | Discord: discord.gg/killers
+ * Author: bad-antics | Twitter: bad-antics | Discord: discord.gg/killers
  * 
  * WARNING: For authorized security testing and research only.
  * 
@@ -28,7 +28,7 @@ const char* BANNER =
 "║     ██║ ╚████║╚██████╔╝███████╗███████╗███████║███████╗   ║\n"
 "║     ╚═╝  ╚═══╝ ╚═════╝ ╚══════╝╚══════╝╚══════╝╚══════╝   ║\n"
 "║              SHELLCODE LOADER (C) - RESEARCH              ║\n"
-"║            bad-antics | @AnonAntics | discord.gg/killers  ║\n"
+"║            bad-antics | bad-antics | discord.gg/killers  ║\n"
 "╚═══════════════════════════════════════════════════════════╝\n";
 
 // XOR decode shellcode

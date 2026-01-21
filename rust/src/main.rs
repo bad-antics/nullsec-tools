@@ -1,6 +1,6 @@
 // NullSec Hash Cracker
 // Multi-threaded hash cracking tool written in Rust
-// Author: bad-antics | Twitter: @AnonAntics | Discord: discord.gg/killers
+// Author: bad-antics | Twitter: bad-antics | Discord: discord.gg/killers
 
 use std::env;
 use std::fs::File;
@@ -22,7 +22,7 @@ const BANNER: &str = r#"
 ║     ██║ ╚████║╚██████╔╝███████╗███████╗███████║███████╗   ║
 ║     ╚═╝  ╚═══╝ ╚═════╝ ╚══════╝╚══════╝╚══════╝╚══════╝   ║
 ║                   HASH CRACKER (Rust)                      ║
-║            bad-antics | @AnonAntics | discord.gg/killers  ║
+║            bad-antics | bad-antics | discord.gg/killers  ║
 ╚═══════════════════════════════════════════════════════════╝
 "#;
 

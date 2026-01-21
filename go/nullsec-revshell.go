@@ -1,6 +1,6 @@
 // NullSec Reverse Shell Generator
 // Multi-platform reverse shell generator in Go
-// Author: bad-antics | Twitter: @AnonAntics | Discord: discord.gg/killers
+// Author: bad-antics | Twitter: bad-antics | Discord: discord.gg/killers
 
 package main
 
@@ -21,7 +21,7 @@ const banner = `
 ║     ██║ ╚████║╚██████╔╝███████╗███████╗███████║███████╗   ║
 ║     ╚═╝  ╚═══╝ ╚═════╝ ╚══════╝╚══════╝╚══════╝╚══════╝   ║
 ║               REVERSE SHELL GENERATOR (Go)                 ║
-║            bad-antics | @AnonAntics | discord.gg/killers  ║
+║            bad-antics | bad-antics | discord.gg/killers  ║
 ╚═══════════════════════════════════════════════════════════╝
 `
 

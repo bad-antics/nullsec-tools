@@ -1,0 +1,48 @@
+#!/bin/bash
+# NullSec Backup Utility - Generated 2026-01-21
+
+BACKUP_DIR="${BACKUP_DIR:-$HOME/backups}"
+DATE=$(date +%Y%m%d_%H%M%S)
+
+backup_home() {
+    local dest="$BACKUP_DIR/home_$DATE.tar.gz"
+    mkdir -p "$BACKUP_DIR"
+    tar -czf "$dest" \
+        --exclude='.cache' \
+        --exclude='.local/share/Trash' \
+        --exclude='node_modules' \
+        --exclude='.npm' \
+        -C "$HOME" . 2>/dev/null
+    echo "Backup created: $dest"
+    echo "Size: $(du -h "$dest" | cut -f1)"
+}
+
+backup_configs() {
+    local dest="$BACKUP_DIR/configs_$DATE.tar.gz"
+    mkdir -p "$BACKUP_DIR"
+    tar -czf "$dest" \
+        -C "$HOME" \
+        .bashrc .profile .vimrc .gitconfig \
+        .config 2>/dev/null
+    echo "Config backup: $dest"
+}
+
+list_backups() {
+    echo "Backups in $BACKUP_DIR:"
+    ls -lh "$BACKUP_DIR"/*.tar.gz 2>/dev/null || echo "No backups found"
+}
+
+restore_backup() {
+    local backup="$1"
+    local dest="${2:-$HOME}"
+    tar -xzf "$backup" -C "$dest"
+    echo "Restored $backup to $dest"
+}
+
+case "${1:-help}" in
+    home) backup_home ;;
+    configs) backup_configs ;;
+    list) list_backups ;;
+    restore) restore_backup "$2" "$3" ;;
+    *) echo "Usage: $0 {home|configs|list|restore} [backup_file] [dest]" ;;
+esac
