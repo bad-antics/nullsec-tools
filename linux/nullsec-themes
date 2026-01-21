@@ -1,0 +1,631 @@
+#!/bin/bash
+# ============================================================================
+# NullSec Themes - Complete Theme Manager
+# ============================================================================
+# GTK themes, terminal themes, and color schemes for NullSec Linux
+# Licensed under NullSec Public License v1.0
+# ============================================================================
+
+VERSION="1.0.0"
+THEME_DIR="$HOME/.local/share/nullsec/themes"
+GTK_DIR="$HOME/.themes"
+ICON_DIR="$HOME/.local/share/icons"
+CONFIG_DIR="$HOME/.config"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+PURPLE='\033[0;35m'
+NC='\033[0m'
+
+banner() {
+    echo -e "${PURPLE}"
+    cat << 'EOF'
+    ╔═══════════════════════════════════════════════════════════════╗
+    ║          NULLSEC THEMES v1.0                                  ║
+    ║          Complete Theme Manager                               ║
+    ╚═══════════════════════════════════════════════════════════════╝
+EOF
+    echo -e "${NC}"
+}
+
+log() { echo -e "${GREEN}[✓]${NC} $1"; }
+warn() { echo -e "${YELLOW}[!]${NC} $1"; }
+error() { echo -e "${RED}[✗]${NC} $1"; exit 1; }
+info() { echo -e "${BLUE}[i]${NC} $1"; }
+
+init() {
+    mkdir -p "$THEME_DIR" "$GTK_DIR" "$ICON_DIR" "$CONFIG_DIR"
+}
+
+# ============================================================================
+# GTK THEME GENERATION
+# ============================================================================
+
+generate_gtk_theme() {
+    local name="${1:-NullSec}"
+    local accent="${2:-#00ff41}"
+    local bg="${3:-#0a0a0f}"
+    local fg="${4:-#e0e0e0}"
+    local theme_path="$GTK_DIR/$name"
+    
+    info "Generating GTK theme: $name"
+    
+    mkdir -p "$theme_path/gtk-3.0" "$theme_path/gtk-4.0"
+    
+    # GTK3 CSS
+    cat > "$theme_path/gtk-3.0/gtk.css" << EOF
+/* NullSec GTK Theme - $name */
+/* Generated: $(date) */
+
+@define-color accent_color $accent;
+@define-color bg_color $bg;
+@define-color fg_color $fg;
+@define-color base_color shade($bg, 1.1);
+@define-color text_color $fg;
+@define-color selected_bg_color $accent;
+@define-color selected_fg_color $bg;
+@define-color tooltip_bg_color shade($bg, 1.2);
+@define-color tooltip_fg_color $fg;
+@define-color error_color #ff3333;
+@define-color warning_color #ffcc00;
+@define-color success_color $accent;
+@define-color border_color shade($bg, 1.5);
+
+* {
+    -gtk-icon-style: symbolic;
+    outline-color: alpha(@accent_color, 0.5);
+}
+
+window, .background {
+    background-color: @bg_color;
+    color: @fg_color;
+}
+
+headerbar, .titlebar {
+    background: linear-gradient(to bottom, shade(@bg_color, 1.2), @bg_color);
+    color: @fg_color;
+    border-bottom: 1px solid @border_color;
+    padding: 6px;
+}
+
+headerbar .title {
+    color: @accent_color;
+    font-weight: bold;
+}
+
+button {
+    background: linear-gradient(to bottom, shade(@bg_color, 1.3), shade(@bg_color, 1.1));
+    color: @fg_color;
+    border: 1px solid @border_color;
+    border-radius: 4px;
+    padding: 6px 12px;
+    transition: all 200ms ease;
+}
+
+button:hover {
+    background: linear-gradient(to bottom, shade(@bg_color, 1.5), shade(@bg_color, 1.3));
+    border-color: @accent_color;
+}
+
+button:active, button:checked {
+    background: @accent_color;
+    color: @bg_color;
+}
+
+entry, textview, treeview {
+    background-color: shade(@bg_color, 0.9);
+    color: @fg_color;
+    border: 1px solid @border_color;
+    border-radius: 4px;
+    padding: 6px;
+}
+
+entry:focus, textview:focus {
+    border-color: @accent_color;
+    box-shadow: 0 0 0 1px alpha(@accent_color, 0.3);
+}
+
+selection {
+    background-color: @accent_color;
+    color: @bg_color;
+}
+
+scrollbar {
+    background-color: @bg_color;
+}
+
+scrollbar slider {
+    background-color: shade(@bg_color, 2);
+    border-radius: 10px;
+    min-width: 8px;
+    min-height: 8px;
+}
+
+scrollbar slider:hover {
+    background-color: @accent_color;
+}
+
+menu, popover, .popup {
+    background-color: shade(@bg_color, 1.1);
+    border: 1px solid @border_color;
+    border-radius: 8px;
+    padding: 4px;
+}
+
+menuitem {
+    padding: 8px 12px;
+    border-radius: 4px;
+}
+
+menuitem:hover {
+    background-color: alpha(@accent_color, 0.2);
+    color: @accent_color;
+}
+
+notebook > header {
+    background-color: @bg_color;
+    border-bottom: 1px solid @border_color;
+}
+
+notebook > header > tabs > tab {
+    padding: 8px 16px;
+    border-bottom: 2px solid transparent;
+}
+
+notebook > header > tabs > tab:checked {
+    border-bottom-color: @accent_color;
+    color: @accent_color;
+}
+
+progressbar trough {
+    background-color: shade(@bg_color, 1.3);
+    border-radius: 4px;
+}
+
+progressbar progress {
+    background: linear-gradient(to right, @accent_color, shade(@accent_color, 1.2));
+    border-radius: 4px;
+}
+
+switch {
+    background-color: shade(@bg_color, 1.5);
+    border-radius: 12px;
+}
+
+switch:checked {
+    background-color: @accent_color;
+}
+
+scale trough {
+    background-color: shade(@bg_color, 1.3);
+    border-radius: 4px;
+}
+
+scale highlight {
+    background-color: @accent_color;
+    border-radius: 4px;
+}
+
+scale slider {
+    background-color: @fg_color;
+    border-radius: 50%;
+}
+
+tooltip {
+    background-color: @tooltip_bg_color;
+    color: @tooltip_fg_color;
+    border: 1px solid @border_color;
+    border-radius: 6px;
+}
+
+.sidebar {
+    background-color: shade(@bg_color, 0.95);
+    border-right: 1px solid @border_color;
+}
+
+.sidebar row:selected {
+    background-color: alpha(@accent_color, 0.2);
+    color: @accent_color;
+}
+
+/* Terminal styling */
+.terminal-window {
+    background-color: @bg_color;
+}
+
+vte-terminal {
+    padding: 8px;
+}
+EOF
+
+    # Copy to GTK4
+    cp "$theme_path/gtk-3.0/gtk.css" "$theme_path/gtk-4.0/gtk.css"
+    
+    # Create index.theme
+    cat > "$theme_path/index.theme" << EOF
+[Desktop Entry]
+Type=X-GNOME-Metatheme
+Name=$name
+Comment=NullSec Linux Theme - Cybersecurity Dark Theme
+Encoding=UTF-8
+
+[X-GNOME-Metatheme]
+GtkTheme=$name
+MetacityTheme=$name
+IconTheme=NullSec-Icons
+EOF
+    
+    log "GTK theme created: $theme_path"
+}
+
+# ============================================================================
+# TERMINAL THEMES
+# ============================================================================
+
+generate_terminal_themes() {
+    info "Generating terminal color schemes..."
+    
+    mkdir -p "$THEME_DIR/terminal"
+    
+    # Alacritty theme
+    mkdir -p "$CONFIG_DIR/alacritty/themes"
+    cat > "$CONFIG_DIR/alacritty/themes/nullsec.toml" << 'EOF'
+# NullSec Alacritty Theme
+
+[colors.primary]
+background = '#0a0a0f'
+foreground = '#e0e0e0'
+
+[colors.cursor]
+text = '#0a0a0f'
+cursor = '#00ff41'
+
+[colors.selection]
+text = '#0a0a0f'
+background = '#00ff41'
+
+[colors.normal]
+black   = '#0a0a0f'
+red     = '#ff3333'
+green   = '#00ff41'
+yellow  = '#ffcc00'
+blue    = '#00aaff'
+magenta = '#bd00ff'
+cyan    = '#00ffcc'
+white   = '#e0e0e0'
+
+[colors.bright]
+black   = '#333333'
+red     = '#ff6666'
+green   = '#66ff99'
+yellow  = '#ffdd66'
+blue    = '#66ccff'
+magenta = '#dd66ff'
+cyan    = '#66ffdd'
+white   = '#ffffff'
+EOF
+    log "Alacritty theme: $CONFIG_DIR/alacritty/themes/nullsec.toml"
+    
+    # Kitty theme
+    mkdir -p "$CONFIG_DIR/kitty/themes"
+    cat > "$CONFIG_DIR/kitty/themes/nullsec.conf" << 'EOF'
+# NullSec Kitty Theme
+
+foreground              #e0e0e0
+background              #0a0a0f
+selection_foreground    #0a0a0f
+selection_background    #00ff41
+cursor                  #00ff41
+cursor_text_color       #0a0a0f
+
+# Black
+color0  #0a0a0f
+color8  #333333
+
+# Red
+color1  #ff3333
+color9  #ff6666
+
+# Green
+color2  #00ff41
+color10 #66ff99
+
+# Yellow
+color3  #ffcc00
+color11 #ffdd66
+
+# Blue
+color4  #00aaff
+color12 #66ccff
+
+# Magenta
+color5  #bd00ff
+color13 #dd66ff
+
+# Cyan
+color6  #00ffcc
+color14 #66ffdd
+
+# White
+color7  #e0e0e0
+color15 #ffffff
+EOF
+    log "Kitty theme: $CONFIG_DIR/kitty/themes/nullsec.conf"
+    
+    # Xresources
+    cat > "$THEME_DIR/terminal/Xresources.nullsec" << 'EOF'
+! NullSec Xresources Theme
+
+*.foreground:   #e0e0e0
+*.background:   #0a0a0f
+*.cursorColor:  #00ff41
+
+*.color0:       #0a0a0f
+*.color1:       #ff3333
+*.color2:       #00ff41
+*.color3:       #ffcc00
+*.color4:       #00aaff
+*.color5:       #bd00ff
+*.color6:       #00ffcc
+*.color7:       #e0e0e0
+
+*.color8:       #333333
+*.color9:       #ff6666
+*.color10:      #66ff99
+*.color11:      #ffdd66
+*.color12:      #66ccff
+*.color13:      #dd66ff
+*.color14:      #66ffdd
+*.color15:      #ffffff
+EOF
+    log "Xresources: $THEME_DIR/terminal/Xresources.nullsec"
+    
+    # Terminator config
+    mkdir -p "$CONFIG_DIR/terminator"
+    cat > "$THEME_DIR/terminal/terminator-nullsec.conf" << 'EOF'
+[profiles]
+  [[nullsec]]
+    background_color = "#0a0a0f"
+    foreground_color = "#e0e0e0"
+    cursor_color = "#00ff41"
+    palette = "#0a0a0f:#ff3333:#00ff41:#ffcc00:#00aaff:#bd00ff:#00ffcc:#e0e0e0:#333333:#ff6666:#66ff99:#ffdd66:#66ccff:#dd66ff:#66ffdd:#ffffff"
+    font = Hack Nerd Font Mono 11
+EOF
+    log "Terminator: $THEME_DIR/terminal/terminator-nullsec.conf"
+}
+
+# ============================================================================
+# SHELL PROMPT THEMES
+# ============================================================================
+
+generate_prompt_themes() {
+    info "Generating shell prompt themes..."
+    
+    mkdir -p "$THEME_DIR/prompts"
+    
+    # Bash prompt
+    cat > "$THEME_DIR/prompts/nullsec.bash" << 'BASH'
+# NullSec Bash Prompt Theme
+
+# Colors
+NS_BLACK='\[\033[0;30m\]'
+NS_RED='\[\033[0;31m\]'
+NS_GREEN='\[\033[0;32m\]'
+NS_YELLOW='\[\033[0;33m\]'
+NS_BLUE='\[\033[0;34m\]'
+NS_PURPLE='\[\033[0;35m\]'
+NS_CYAN='\[\033[0;36m\]'
+NS_WHITE='\[\033[0;37m\]'
+NS_RESET='\[\033[0m\]'
+NS_BOLD='\[\033[1m\]'
+
+# Git branch
+nullsec_git_branch() {
+    git branch 2>/dev/null | sed -e '/^[^*]/d' -e 's/* \(.*\)/ (\1)/'
+}
+
+# Prompt
+export PS1="${NS_CYAN}┌──[${NS_GREEN}${NS_BOLD}\u${NS_RESET}${NS_CYAN}]─[${NS_YELLOW}\h${NS_CYAN}]─[${NS_BLUE}\w${NS_CYAN}]${NS_PURPLE}\$(nullsec_git_branch)${NS_RESET}
+${NS_CYAN}└──╼ ${NS_GREEN}\$${NS_RESET} "
+
+export PS2="${NS_CYAN}   ╼ ${NS_RESET}"
+BASH
+    log "Bash prompt: $THEME_DIR/prompts/nullsec.bash"
+    
+    # Zsh prompt
+    cat > "$THEME_DIR/prompts/nullsec.zsh" << 'ZSH'
+# NullSec Zsh Prompt Theme
+
+autoload -Uz vcs_info
+precmd() { vcs_info }
+
+zstyle ':vcs_info:git:*' formats ' (%b)'
+setopt PROMPT_SUBST
+
+PROMPT='%F{cyan}┌──[%F{green}%B%n%b%F{cyan}]─[%F{yellow}%m%F{cyan}]─[%F{blue}%~%F{cyan}]%F{magenta}${vcs_info_msg_0_}%f
+%F{cyan}└──╼ %F{green}$%f '
+
+RPROMPT='%F{8}%*%f'
+ZSH
+    log "Zsh prompt: $THEME_DIR/prompts/nullsec.zsh"
+    
+    # Fish prompt
+    mkdir -p "$CONFIG_DIR/fish/functions"
+    cat > "$CONFIG_DIR/fish/functions/fish_prompt.fish" << 'FISH'
+# NullSec Fish Prompt Theme
+
+function fish_prompt
+    set -l last_status $status
+    
+    # Colors
+    set -l cyan (set_color cyan)
+    set -l green (set_color green)
+    set -l yellow (set_color yellow)
+    set -l blue (set_color blue)
+    set -l magenta (set_color magenta)
+    set -l red (set_color red)
+    set -l normal (set_color normal)
+    
+    # Git branch
+    set -l git_branch (git branch 2>/dev/null | sed -n '/\* /s///p')
+    set -l git_info ""
+    if test -n "$git_branch"
+        set git_info " $magenta($git_branch)"
+    end
+    
+    # Status indicator
+    set -l status_color $green
+    if test $last_status -ne 0
+        set status_color $red
+    end
+    
+    echo -n $cyan"┌──["$green(whoami)$cyan"]─["$yellow(hostname)$cyan"]─["$blue(prompt_pwd)$cyan"]"$git_info$normal
+    echo
+    echo -n $cyan"└──╼ "$status_color"\$ "$normal
+end
+FISH
+    log "Fish prompt: $CONFIG_DIR/fish/functions/fish_prompt.fish"
+}
+
+# ============================================================================
+# THEME PRESETS
+# ============================================================================
+
+apply_theme() {
+    local preset="${1:-cyber}"
+    
+    banner
+    info "Applying theme preset: $preset"
+    echo ""
+    
+    case "$preset" in
+        cyber)
+            generate_gtk_theme "NullSec-Cyber" "#00ff41" "#0a0a0f" "#e0e0e0"
+            ;;
+        crimson)
+            generate_gtk_theme "NullSec-Crimson" "#ff0040" "#0f0a0a" "#e0e0e0"
+            ;;
+        phantom)
+            generate_gtk_theme "NullSec-Phantom" "#bd00ff" "#0f0a1a" "#e0e0e0"
+            ;;
+        arctic)
+            generate_gtk_theme "NullSec-Arctic" "#00d4ff" "#0a0a1a" "#e0e0e0"
+            ;;
+        stealth)
+            generate_gtk_theme "NullSec-Stealth" "#666666" "#0a0a0a" "#b0b0b0"
+            ;;
+        *)
+            warn "Unknown preset: $preset"
+            info "Available: cyber, crimson, phantom, arctic, stealth"
+            return 1
+            ;;
+    esac
+    
+    generate_terminal_themes
+    generate_prompt_themes
+    
+    echo ""
+    log "Theme applied: $preset"
+    info "Restart applications or logout/login to see changes"
+}
+
+# ============================================================================
+# MAIN
+# ============================================================================
+
+list_themes() {
+    banner
+    info "Installed GTK themes:"
+    echo ""
+    for theme in "$GTK_DIR"/NullSec*; do
+        [[ -d "$theme" ]] && echo "  - $(basename "$theme")"
+    done
+    
+    echo ""
+    info "Available presets:"
+    echo "  - cyber    (Green on black)"
+    echo "  - crimson  (Red on dark)"
+    echo "  - phantom  (Purple on dark)"
+    echo "  - arctic   (Cyan on dark)"
+    echo "  - stealth  (Gray on black)"
+}
+
+show_help() {
+    banner
+    cat << 'HELP'
+USAGE:
+    nullsec-themes <command> [options]
+
+COMMANDS:
+    apply <preset>      Apply theme preset
+    generate            Generate all theme files
+    gtk [name]          Generate GTK theme only
+    terminal            Generate terminal themes only
+    prompt              Generate shell prompt themes only
+    list                List installed themes
+
+PRESETS:
+    cyber               Green accent (default NullSec)
+    crimson             Red accent
+    phantom             Purple accent
+    arctic              Cyan/blue accent
+    stealth             Minimal gray theme
+
+EXAMPLES:
+    nullsec-themes apply cyber
+    nullsec-themes generate
+    nullsec-themes gtk NullSec-Custom "#ff6600" "#1a1a1a" "#ffffff"
+    nullsec-themes terminal
+
+LOCATIONS:
+    GTK themes:         ~/.themes/
+    Terminal themes:    ~/.local/share/nullsec/themes/terminal/
+    Prompts:           ~/.local/share/nullsec/themes/prompts/
+
+LICENSE:
+    NullSec Public License v1.0
+
+HELP
+}
+
+main() {
+    init
+    
+    case "${1:-help}" in
+        apply)
+            apply_theme "${2:-cyber}"
+            ;;
+        generate|gen)
+            banner
+            generate_gtk_theme "NullSec" "#00ff41" "#0a0a0f" "#e0e0e0"
+            generate_terminal_themes
+            generate_prompt_themes
+            echo ""
+            log "All themes generated"
+            ;;
+        gtk)
+            banner
+            generate_gtk_theme "${2:-NullSec}" "${3:-#00ff41}" "${4:-#0a0a0f}" "${5:-#e0e0e0}"
+            ;;
+        terminal|term)
+            banner
+            generate_terminal_themes
+            ;;
+        prompt|prompts)
+            banner
+            generate_prompt_themes
+            ;;
+        list|ls)
+            list_themes
+            ;;
+        *)
+            show_help
+            ;;
+    esac
+}
+
+main "$@"
