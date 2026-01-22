@@ -1,6 +1,6 @@
 // NullSec Reverse Shell Generator
 // Multi-platform reverse shell generator in Go
-// Author: bad-antics | Twitter: bad-antics | Discord: discord.gg/killers
+// Author: bad-antics | GitHub: bad-antics | Discord: discord.gg/killers
 
 package main
 
