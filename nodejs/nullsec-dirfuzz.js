@@ -2,7 +2,7 @@
 /**
  * NullSec Directory Fuzzer
  * Fast async directory/file enumeration tool
- * Author: bad-antics | Twitter: @AnonAntics | Discord: discord.gg/killers
+ * Author: bad-antics | GitHub: bad-antics | Discord: discord.gg/killers
  */
 
 const https = require('https');
