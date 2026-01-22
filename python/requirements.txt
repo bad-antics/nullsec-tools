@@ -1,0 +1,14 @@
+# NullSec Python Tools Dependencies
+# Install with: pip3 install -r requirements.txt
+
+# Async HTTP client for subdomain enumeration
+aiohttp>=3.9.0
+
+# DNS resolution library
+dnspython>=2.4.0
+
+# Type hints support (included in Python 3.9+)
+typing-extensions>=4.8.0
+
+# Optional: Enhanced output formatting
+colorama>=0.4.6
