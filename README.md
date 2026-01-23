@@ -67,7 +67,7 @@ By using these tools, you agree to:
 
 | Tool | Description |
 |------|-------------|
-| `nullsec-harden` | System hardening toolkit |
+| `nullsec-harden` | System Security toolkit |
 | `nullsec-audit` | Security audit framework |
 | `nullsec-monitor` | System monitoring |
 | `nullsec-netwatch` | Network traffic analyzer |
@@ -82,7 +82,7 @@ By using these tools, you agree to:
 |------|-------------|
 | `nullsec-crypt` | File encryption (AES-256-GCM) |
 | `nullsec-vault` | Encrypted secrets vault |
-| `nullsec-privacy` | Privacy hardening |
+| `nullsec-privacy` | Privacy Security |
 | `nullsec-proxy` | Proxy chain management |
 | `nullsec-tunnel` | SSH tunneling toolkit |
 | `nullsec-shred` | Secure file deletion |
@@ -176,7 +176,7 @@ nullsec-enum http 192.168.1.100
 nullsec-crypt encrypt secret.txt
 nullsec-vault add api_key "sk-xxxx"
 
-# System hardening
+# System Security
 nullsec-harden firewall
 nullsec-harden ssh
 nullsec-audit full
