@@ -1,0 +1,37 @@
+#!/bin/bash
+# NullSec Network Utility - Generated 2026-01-25
+
+echo "╔═══════════════════════════════════════╗"
+echo "║   NullSec Network Utility             ║"
+echo "╚═══════════════════════════════════════╝"
+
+case "${1:-status}" in
+    status)
+        echo "Network Interfaces:"
+        ip -br addr 2>/dev/null || ifconfig -a
+        echo ""
+        echo "Routing Table:"
+        ip route 2>/dev/null || netstat -rn
+        echo ""
+        echo "DNS Servers:"
+        grep nameserver /etc/resolv.conf
+        ;;
+    speed)
+        echo "Testing connection speed..."
+        curl -s https://speed.cloudflare.com/__down?bytes=10000000 -o /dev/null -w \
+            "Download: %{speed_download} bytes/sec\n"
+        ;;
+    latency)
+        echo "Testing latency to common servers..."
+        for host in 8.8.8.8 1.1.1.1 208.67.222.222; do
+            ping -c 3 "$host" 2>/dev/null | tail -1
+        done
+        ;;
+    connections)
+        echo "Active connections:"
+        ss -tuln 2>/dev/null || netstat -tuln
+        ;;
+    *)
+        echo "Usage: $0 {status|speed|latency|connections}"
+        ;;
+esac
