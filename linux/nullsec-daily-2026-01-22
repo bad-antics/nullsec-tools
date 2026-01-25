@@ -1,0 +1,52 @@
+#!/bin/bash
+# NullSec Performance Tool - Generated 2026-01-22
+
+benchmark_cpu() {
+    echo "CPU Benchmark (calculating primes)..."
+    local start=$(date +%s.%N)
+    local count=0
+    for ((i=2; i<=10000; i++)); do
+        local prime=1
+        for ((j=2; j*j<=i; j++)); do
+            ((i%j==0)) && { prime=0; break; }
+        done
+        ((prime)) && ((count++))
+    done
+    local end=$(date +%s.%N)
+    echo "Found $count primes in $(echo "$end - $start" | bc) seconds"
+}
+
+benchmark_disk() {
+    echo "Disk Benchmark..."
+    local testfile="/tmp/nullsec-disktest-$$"
+    
+    echo "Write test (100MB):"
+    dd if=/dev/zero of="$testfile" bs=1M count=100 conv=fdatasync 2>&1 | grep -E "[0-9.]+ [MG]B/s"
+    
+    echo "Read test:"
+    dd if="$testfile" of=/dev/null bs=1M 2>&1 | grep -E "[0-9.]+ [MG]B/s"
+    
+    rm -f "$testfile"
+}
+
+benchmark_memory() {
+    echo "Memory Info:"
+    free -h
+    echo ""
+    echo "Memory Speed Test..."
+    dd if=/dev/zero of=/dev/null bs=1G count=1 2>&1 | tail -1
+}
+
+case "${1:-all}" in
+    cpu) benchmark_cpu ;;
+    disk) benchmark_disk ;;
+    memory) benchmark_memory ;;
+    all)
+        benchmark_cpu
+        echo ""
+        benchmark_disk
+        echo ""
+        benchmark_memory
+        ;;
+    *) echo "Usage: $0 {cpu|disk|memory|all}" ;;
+esac

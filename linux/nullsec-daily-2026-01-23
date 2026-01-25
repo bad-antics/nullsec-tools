@@ -1,0 +1,63 @@
+#!/bin/bash
+# NullSec Privacy Enhancer - Generated 2026-01-23
+
+clear_traces() {
+    echo "Clearing system traces..."
+    
+    # Clear bash history
+    cat /dev/null > ~/.bash_history
+    history -c
+    
+    # Clear recent files
+    rm -rf ~/.local/share/recently-used.xbel 2>/dev/null
+    
+    # Clear thumbnails
+    rm -rf ~/.cache/thumbnails/* 2>/dev/null
+    
+    # Clear temp files
+    rm -rf /tmp/nullsec-* 2>/dev/null
+    
+    echo "Traces cleared"
+}
+
+check_privacy() {
+    echo "Privacy Check:"
+    echo ""
+    
+    echo "=== Listening Services ==="
+    ss -tlnp 2>/dev/null | head -10
+    
+    echo ""
+    echo "=== DNS Leaks ==="
+    cat /etc/resolv.conf | grep nameserver
+    
+    echo ""
+    echo "=== Tor Status ==="
+    systemctl is-active tor 2>/dev/null || echo "Tor not active"
+    
+    echo ""
+    echo "=== Public IP ==="
+    curl -s https://ifconfig.me 2>/dev/null || echo "Could not determine"
+}
+
+harden_firefox() {
+    local profile_dir=$(find ~/.mozilla/firefox -name "*.default*" -type d 2>/dev/null | head -1)
+    if [[ -d "$profile_dir" ]]; then
+        cat >> "$profile_dir/user.js" << 'USERJS'
+user_pref("privacy.trackingprotection.enabled", true);
+user_pref("network.cookie.cookieBehavior", 1);
+user_pref("media.peerconnection.enabled", false);
+user_pref("geo.enabled", false);
+USERJS
+        echo "Firefox hardened"
+    else
+        echo "Firefox profile not found"
+    fi
+}
+
+case "${1:-check}" in
+    clear) clear_traces ;;
+    check) check_privacy ;;
+    firefox) harden_firefox ;;
+    *) echo "Usage: $0 {clear|check|firefox}" ;;
+esac

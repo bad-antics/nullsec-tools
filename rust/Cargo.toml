@@ -2,12 +2,21 @@
 name = "nullsec-hashcrack"
 version = "1.0.0"
 edition = "2021"
-authors = ["bad-antics <bad-antics@users.noreply.github.com>"]
-description = "Multi-threaded hash cracker - NullSec Project"
+authors = ["bad-antics"]
+description = "Multi-threaded hash cracker supporting MD5, SHA1, SHA256, and SHA512"
 license = "MIT"
 repository = "https://github.com/bad-antics/nullsec-tools"
+keywords = ["hash", "crack", "security", "md5"]
+categories = ["command-line-utilities", "cryptography"]
+readme = "README.md"
+exclude = ["target/"]
 
 [dependencies]
 md5 = "0.7"
 sha1 = "0.10"
 sha2 = "0.10"
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true
