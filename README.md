@@ -256,3 +256,33 @@ This project is licensed under the **NullSec Public License v1.0** - see [LICENS
 
 [![GitHub](https://img.shields.io/badge/GitHub-bad--antics-181717?style=flat&logo=github&logoColor=white)](https://github.com/bad-antics)
 [![Discord](https://img.shields.io/badge/Discord-killers-5865F2?style=flat&logo=discord&logoColor=white)](https://discord.gg/killers)
+
+## 🔧 Quick Start
+
+```bash
+# Clone the repository
+git clone https://github.com/bad-antics/nullsec-tools.git
+cd nullsec-tools
+
+# Run the installer
+./install.sh
+
+# Or install specific tools
+./install.sh --category cloud
+./install.sh --tool aws-recon
+```
+
+## 📊 Tool Statistics
+
+| Category | Tools | Languages |
+|----------|-------|-----------|
+| Cloud Security | 12 | Python, Go, Rust |
+| Network Analysis | 18 | C, Python, Go |
+| Reverse Engineering | 15 | C++, Rust, Python |
+| Mobile Security | 22 | Kotlin, Swift, Python |
+| Hardware Hacking | 8 | C, Rust, Assembly |
+| Automotive | 9 | C, Python, CAN |
+| AI/ML Security | 6 | Python |
+| Web Security | 25 | JS, Python, Go |
+| Forensics | 20 | Python, C |
+
