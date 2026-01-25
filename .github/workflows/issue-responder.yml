@@ -1,0 +1,49 @@
+name: Issue Responder Bot
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  issues: write
+
+jobs:
+  respond:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Respond to Issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issue = context.payload.issue;
+            const title = issue.title.toLowerCase();
+            const author = issue.user.login;
+            
+            let response = '';
+            let labels = [];
+            
+            if (title.includes('bug') || title.includes('error')) {
+              labels = ['bug'];
+              response = `## 🐛 Bug Report\n\nThanks @${author}!\n\n---\n*🤖 NullSec Bot*`;
+            } else if (title.includes('feature')) {
+              labels = ['enhancement'];
+              response = `## 💡 Feature Request\n\nThanks @${author}!\n\n---\n*🤖 NullSec Bot*`;
+            } else {
+              response = `## 📝 Issue Received\n\nThanks @${author}!\n\n---\n*🤖 NullSec Bot*`;
+            }
+            
+            if (labels.length > 0) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                labels: labels
+              });
+            }
+            
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issue.number,
+              body: response
+            });
