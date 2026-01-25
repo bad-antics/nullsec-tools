@@ -6,12 +6,20 @@ Author: bad-antics | GitHub: bad-antics | Discord: discord.gg/killers
 """
 
 import asyncio
-import aiohttp
 import argparse
-import dns.resolver
 import sys
 from typing import Set, List
 from concurrent.futures import ThreadPoolExecutor
+
+try:
+    import aiohttp
+except ImportError:
+    aiohttp = None
+
+try:
+    import dns.resolver
+except ImportError:
+    dns = None
 
 BANNER = """
 ╔═══════════════════════════════════════════════════════════╗
@@ -38,39 +46,56 @@ DEFAULT_WORDLIST = [
     "grafana", "prometheus", "nagios", "zabbix", "monitor", "logs", "sentry"
 ]
 
+
 class SubdomainEnumerator:
     def __init__(self, domain: str, wordlist: List[str], threads: int = 50):
         self.domain = domain
         self.wordlist = wordlist
         self.threads = threads
         self.found: Set[str] = set()
-        self.resolver = dns.resolver.Resolver()
-        self.resolver.timeout = 2
-        self.resolver.lifetime = 2
+        
+        if dns:
+            self.resolver = dns.resolver.Resolver()
+            self.resolver.timeout = 2
+            self.resolver.lifetime = 2
+        else:
+            self.resolver = None
 
     def dns_resolve(self, subdomain: str) -> bool:
         """Resolve subdomain via DNS"""
+        if not self.resolver:
+            return False
         try:
             full_domain = f"{subdomain}.{self.domain}"
             self.resolver.resolve(full_domain, 'A')
             return True
-        except:
+        except Exception:
             return False
 
-    async def http_check(self, session: aiohttp.ClientSession, subdomain: str) -> bool:
+    async def http_check(self, session, subdomain: str) -> bool:
         """Check if subdomain responds via HTTP"""
+        if not aiohttp:
+            return False
         full_domain = f"{subdomain}.{self.domain}"
         for proto in ['https', 'http']:
             try:
-                async with session.get(f"{proto}://{full_domain}", timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                async with session.get(
+                    f"{proto}://{full_domain}",
+                    timeout=aiohttp.ClientTimeout(total=5),
+                    ssl=False
+                ) as resp:
                     if resp.status < 500:
                         return True
-            except:
+            except Exception:
                 continue
         return False
 
     def enumerate_dns(self) -> Set[str]:
         """DNS-based enumeration"""
+        if not dns:
+            print("[-] dnspython not installed. Run: pip install dnspython")
+            return self.found
+            
         print(f"[*] Starting DNS enumeration with {len(self.wordlist)} subdomains...")
         with ThreadPoolExecutor(max_workers=self.threads) as executor:
             results = list(executor.map(self.dns_resolve, self.wordlist))
@@ -85,6 +110,10 @@ class SubdomainEnumerator:
 
     async def enumerate_http(self) -> Set[str]:
         """HTTP-based enumeration"""
+        if not aiohttp:
+            print("[-] aiohttp not installed. Run: pip install aiohttp")
+            return self.found
+            
         print(f"[*] Starting HTTP enumeration...")
         connector = aiohttp.TCPConnector(limit=self.threads, ssl=False)
         async with aiohttp.ClientSession(connector=connector) as session:
@@ -94,11 +123,12 @@ class SubdomainEnumerator:
             for i, found in enumerate(results):
                 if found is True:
                     subdomain = f"{self.wordlist[i]}.{self.domain}"
-                    self.found.add(subdomain)
                     if subdomain not in self.found:
+                        self.found.add(subdomain)
                         print(f"[+] Found: {subdomain}")
         
         return self.found
+
 
 def load_wordlist(path: str) -> List[str]:
     """Load wordlist from file"""
@@ -108,6 +138,7 @@ def load_wordlist(path: str) -> List[str]:
     except FileNotFoundError:
         print(f"[-] Wordlist not found: {path}")
         sys.exit(1)
+
 
 def main():
     print(BANNER)
@@ -140,6 +171,7 @@ def main():
         with open(args.output, 'w') as f:
             f.write('\n'.join(sorted(found)))
         print(f"[*] Results saved to: {args.output}")
+
 
 if __name__ == '__main__':
     main()
