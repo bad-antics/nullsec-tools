@@ -7,7 +7,7 @@
 [![License: NPL](https://img.shields.io/badge/License-NullSec%20Public-red.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Linux-blue.svg)]()
 [![Shell](https://img.shields.io/badge/Shell-Bash-green.svg)]()
-[![Tools](https://img.shields.io/badge/Tools-50+-purple.svg)]()
+[![Tools](https://img.shields.io/badge/Tools-51+-purple.svg)]()
 [![GitHub](https://img.shields.io/badge/GitHub-bad--antics-black.svg)](https://github.com/bad-antics)
 
 ```
@@ -96,6 +96,7 @@ By using these tools, you agree to:
 | `nullsec-container` | Container security |
 | `nullsec-sandbox` | Sandboxed execution |
 | `nullsec-fetch` | System info (neofetch-style) |
+| `glowbarn` | Security console & resource monitor |
 | `nullsec-update` | System updater |
 | `nullsec-verify` | File integrity checker |
 | `nullsec-watch` | File system watcher |
