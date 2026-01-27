@@ -1,0 +1,180 @@
+#!/bin/bash
+# NullSec Crypto Tool
+# Cryptographic utilities for security research
+# License: MIT
+
+VERSION="1.0.0"
+SCRIPT_NAME=$(basename "$0")
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+usage() {
+    cat << HELP
+${CYAN}NullSec Crypto Tool v${VERSION}${NC}
+
+Usage: $SCRIPT_NAME <command> [arguments]
+
+Commands:
+  hash <file>           Generate multiple hashes for a file
+  verify <file> <hash>  Verify file against hash (auto-detects type)
+  encrypt <file>        AES-256-CBC encrypt file
+  decrypt <file>        Decrypt .enc file
+  genkey [bits]         Generate random key (default: 256 bits)
+  genpw [length]        Generate secure password (default: 24 chars)
+  entropy <file>        Calculate file entropy
+  b64e <string>         Base64 encode
+  b64d <string>         Base64 decode
+  hexe <file>           Hex encode file
+  hexd <file>           Hex decode file
+
+Examples:
+  $SCRIPT_NAME hash /etc/passwd
+  $SCRIPT_NAME encrypt secrets.txt
+  $SCRIPT_NAME genkey 512
+  $SCRIPT_NAME genpw 32
+
+HELP
+}
+
+hash_file() {
+    local file="$1"
+    [[ ! -f "$file" ]] && { echo -e "${RED}Error: File not found: $file${NC}"; exit 1; }
+    
+    echo -e "${CYAN}Hashes for: $file${NC}"
+    echo "────────────────────────────────────────────"
+    printf "%-8s %s\n" "MD5:" "$(md5sum "$file" 2>/dev/null | cut -d' ' -f1)"
+    printf "%-8s %s\n" "SHA1:" "$(sha1sum "$file" 2>/dev/null | cut -d' ' -f1)"
+    printf "%-8s %s\n" "SHA256:" "$(sha256sum "$file" 2>/dev/null | cut -d' ' -f1)"
+    printf "%-8s %s\n" "SHA512:" "$(sha512sum "$file" 2>/dev/null | cut -d' ' -f1)"
+}
+
+verify_hash() {
+    local file="$1"
+    local hash="$2"
+    [[ ! -f "$file" ]] && { echo -e "${RED}Error: File not found: $file${NC}"; exit 1; }
+    [[ -z "$hash" ]] && { echo -e "${RED}Error: Hash required${NC}"; exit 1; }
+    
+    local len=${#hash}
+    local computed=""
+    
+    case $len in
+        32)  computed=$(md5sum "$file" | cut -d' ' -f1); algo="MD5" ;;
+        40)  computed=$(sha1sum "$file" | cut -d' ' -f1); algo="SHA1" ;;
+        64)  computed=$(sha256sum "$file" | cut -d' ' -f1); algo="SHA256" ;;
+        128) computed=$(sha512sum "$file" | cut -d' ' -f1); algo="SHA512" ;;
+        *)   echo -e "${RED}Unknown hash format${NC}"; exit 1 ;;
+    esac
+    
+    if [[ "${computed,,}" == "${hash,,}" ]]; then
+        echo -e "${GREEN}✓ $algo verification PASSED${NC}"
+    else
+        echo -e "${RED}✗ $algo verification FAILED${NC}"
+        echo "Expected: $hash"
+        echo "Got:      $computed"
+        exit 1
+    fi
+}
+
+encrypt_file() {
+    local file="$1"
+    [[ ! -f "$file" ]] && { echo -e "${RED}Error: File not found: $file${NC}"; exit 1; }
+    
+    openssl enc -aes-256-cbc -salt -pbkdf2 -iter 100000 -in "$file" -out "${file}.enc"
+    if [[ $? -eq 0 ]]; then
+        echo -e "${GREEN}✓ Encrypted: ${file}.enc${NC}"
+    else
+        echo -e "${RED}✗ Encryption failed${NC}"
+        exit 1
+    fi
+}
+
+decrypt_file() {
+    local file="$1"
+    [[ ! -f "$file" ]] && { echo -e "${RED}Error: File not found: $file${NC}"; exit 1; }
+    
+    local outfile="${file%.enc}"
+    [[ "$outfile" == "$file" ]] && outfile="${file}.dec"
+    
+    openssl enc -aes-256-cbc -d -pbkdf2 -iter 100000 -in "$file" -out "$outfile"
+    if [[ $? -eq 0 ]]; then
+        echo -e "${GREEN}✓ Decrypted: $outfile${NC}"
+    else
+        echo -e "${RED}✗ Decryption failed${NC}"
+        exit 1
+    fi
+}
+
+gen_key() {
+    local bits="${1:-256}"
+    local bytes=$((bits / 8))
+    openssl rand -base64 "$bytes"
+}
+
+gen_password() {
+    local len="${1:-24}"
+    tr -dc 'A-Za-z0-9!@#$%^&*()_+=-[]{}|;:,.<>?' < /dev/urandom | head -c "$len"
+    echo
+}
+
+calc_entropy() {
+    local file="$1"
+    [[ ! -f "$file" ]] && { echo -e "${RED}Error: File not found: $file${NC}"; exit 1; }
+    
+    python3 -c "
+import math
+import sys
+
+with open('$file', 'rb') as f:
+    data = f.read()
+
+if len(data) == 0:
+    print('Empty file')
+    sys.exit(1)
+
+freq = {}
+for byte in data:
+    freq[byte] = freq.get(byte, 0) + 1
+
+entropy = 0.0
+for count in freq.values():
+    if count > 0:
+        p = count / len(data)
+        entropy -= p * math.log2(p)
+
+print(f'File: $file')
+print(f'Size: {len(data)} bytes')
+print(f'Entropy: {entropy:.4f} bits/byte')
+print(f'Max theoretical: 8.0000 bits/byte')
+print(f'Randomness: {entropy/8*100:.1f}%')
+
+if entropy > 7.5:
+    print('Assessment: Likely encrypted/compressed')
+elif entropy > 6.0:
+    print('Assessment: High entropy (binary/compressed)')
+elif entropy > 4.0:
+    print('Assessment: Medium entropy (typical data)')
+else:
+    print('Assessment: Low entropy (text/structured)')
+" 2>/dev/null || echo -e "${RED}Error: Python3 required for entropy calculation${NC}"
+}
+
+# Main
+case "${1:-help}" in
+    hash)     hash_file "$2" ;;
+    verify)   verify_hash "$2" "$3" ;;
+    encrypt)  encrypt_file "$2" ;;
+    decrypt)  decrypt_file "$2" ;;
+    genkey)   gen_key "$2" ;;
+    genpw)    gen_password "$2" ;;
+    entropy)  calc_entropy "$2" ;;
+    b64e)     echo -n "$2" | base64 ;;
+    b64d)     echo "$2" | base64 -d ;;
+    hexe)     xxd -p "$2" 2>/dev/null || echo -e "${RED}File not found${NC}" ;;
+    hexd)     xxd -p -r "$2" 2>/dev/null || echo -e "${RED}File not found${NC}" ;;
+    -v|--version) echo "NullSec Crypto Tool v${VERSION}" ;;
+    help|-h|--help|*) usage ;;
+esac
