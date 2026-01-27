@@ -1,0 +1,185 @@
+#!/bin/bash
+# NullSec Network Reconnaissance Tool
+# Quick network enumeration for security assessments
+# License: MIT
+
+VERSION="1.0.0"
+SCRIPT_NAME=$(basename "$0")
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+usage() {
+    cat << HELP
+${CYAN}NullSec Network Recon v${VERSION}${NC}
+
+Usage: $SCRIPT_NAME <command> [target]
+
+Commands:
+  local               Show local network information
+  scan <target>       Quick host/port scan
+  ping <subnet>       Ping sweep subnet (e.g., 192.168.1.0/24)
+  arp                 Show ARP table
+  routes              Show routing table
+  dns <domain>        DNS enumeration
+  whois <domain>      WHOIS lookup
+  headers <url>       HTTP headers
+  ssl <host> [port]   SSL certificate info
+  ports <host>        Common port scan
+
+Examples:
+  $SCRIPT_NAME local
+  $SCRIPT_NAME scan 192.168.1.1
+  $SCRIPT_NAME ping 192.168.1.0/24
+  $SCRIPT_NAME dns example.com
+
+HELP
+}
+
+local_info() {
+    echo -e "${CYAN}═══ Local Network Information ═══${NC}\n"
+    
+    echo -e "${GREEN}Hostname:${NC} $(hostname)"
+    echo -e "${GREEN}User:${NC} $(whoami)"
+    echo ""
+    
+    echo -e "${GREEN}Network Interfaces:${NC}"
+    ip -br addr 2>/dev/null || ifconfig 2>/dev/null | grep -E "^[a-z]|inet "
+    echo ""
+    
+    echo -e "${GREEN}Default Gateway:${NC}"
+    ip route | grep default | head -1
+    echo ""
+    
+    echo -e "${GREEN}DNS Servers:${NC}"
+    grep nameserver /etc/resolv.conf 2>/dev/null | head -3
+    echo ""
+    
+    echo -e "${GREEN}Listening Ports:${NC}"
+    ss -tuln 2>/dev/null | grep LISTEN | head -10
+}
+
+quick_scan() {
+    local target="$1"
+    [[ -z "$target" ]] && { echo -e "${RED}Target required${NC}"; exit 1; }
+    
+    echo -e "${CYAN}═══ Scanning: $target ═══${NC}\n"
+    
+    # Check if host is up
+    if ping -c 1 -W 2 "$target" &>/dev/null; then
+        echo -e "${GREEN}✓ Host is UP${NC}\n"
+    else
+        echo -e "${YELLOW}⚠ Host may be down or blocking ICMP${NC}\n"
+    fi
+    
+    # Quick port scan
+    echo -e "${GREEN}Common Ports:${NC}"
+    for port in 21 22 23 25 53 80 110 135 139 143 443 445 993 995 1433 3306 3389 5432 8080 8443; do
+        timeout 1 bash -c "echo >/dev/tcp/$target/$port" 2>/dev/null && \
+            echo -e "  ${GREEN}$port${NC} - OPEN"
+    done
+}
+
+ping_sweep() {
+    local subnet="$1"
+    [[ -z "$subnet" ]] && { echo -e "${RED}Subnet required (e.g., 192.168.1.0/24)${NC}"; exit 1; }
+    
+    echo -e "${CYAN}═══ Ping Sweep: $subnet ═══${NC}\n"
+    
+    if command -v nmap &>/dev/null; then
+        nmap -sn "$subnet" 2>/dev/null | grep -E "Nmap scan|Host is"
+    else
+        # Manual sweep for /24
+        local base=$(echo "$subnet" | cut -d'/' -f1 | rev | cut -d'.' -f2- | rev)
+        echo "Scanning $base.1-254..."
+        for i in $(seq 1 254); do
+            ping -c 1 -W 1 "${base}.${i}" &>/dev/null && echo -e "${GREEN}${base}.${i}${NC} is UP" &
+        done
+        wait
+    fi
+}
+
+dns_enum() {
+    local domain="$1"
+    [[ -z "$domain" ]] && { echo -e "${RED}Domain required${NC}"; exit 1; }
+    
+    echo -e "${CYAN}═══ DNS Enumeration: $domain ═══${NC}\n"
+    
+    echo -e "${GREEN}A Records:${NC}"
+    dig +short A "$domain" 2>/dev/null || host -t A "$domain" 2>/dev/null
+    
+    echo -e "\n${GREEN}AAAA Records:${NC}"
+    dig +short AAAA "$domain" 2>/dev/null || host -t AAAA "$domain" 2>/dev/null
+    
+    echo -e "\n${GREEN}MX Records:${NC}"
+    dig +short MX "$domain" 2>/dev/null || host -t MX "$domain" 2>/dev/null
+    
+    echo -e "\n${GREEN}NS Records:${NC}"
+    dig +short NS "$domain" 2>/dev/null || host -t NS "$domain" 2>/dev/null
+    
+    echo -e "\n${GREEN}TXT Records:${NC}"
+    dig +short TXT "$domain" 2>/dev/null | head -5
+}
+
+http_headers() {
+    local url="$1"
+    [[ -z "$url" ]] && { echo -e "${RED}URL required${NC}"; exit 1; }
+    
+    # Add https if no protocol
+    [[ ! "$url" =~ ^https?:// ]] && url="https://$url"
+    
+    echo -e "${CYAN}═══ HTTP Headers: $url ═══${NC}\n"
+    curl -sI -L --max-time 10 "$url" 2>/dev/null | head -30
+}
+
+ssl_info() {
+    local host="$1"
+    local port="${2:-443}"
+    [[ -z "$host" ]] && { echo -e "${RED}Host required${NC}"; exit 1; }
+    
+    echo -e "${CYAN}═══ SSL Certificate: $host:$port ═══${NC}\n"
+    
+    echo | openssl s_client -connect "$host:$port" -servername "$host" 2>/dev/null | \
+        openssl x509 -noout -text 2>/dev/null | \
+        grep -E "Subject:|Issuer:|Not Before:|Not After:|DNS:" | head -20
+}
+
+common_ports() {
+    local host="$1"
+    [[ -z "$host" ]] && { echo -e "${RED}Host required${NC}"; exit 1; }
+    
+    echo -e "${CYAN}═══ Port Scan: $host ═══${NC}\n"
+    
+    declare -A services=(
+        [21]="FTP" [22]="SSH" [23]="Telnet" [25]="SMTP" [53]="DNS"
+        [80]="HTTP" [110]="POP3" [143]="IMAP" [443]="HTTPS" [445]="SMB"
+        [993]="IMAPS" [995]="POP3S" [1433]="MSSQL" [3306]="MySQL"
+        [3389]="RDP" [5432]="PostgreSQL" [5900]="VNC" [6379]="Redis"
+        [8080]="HTTP-ALT" [8443]="HTTPS-ALT" [27017]="MongoDB"
+    )
+    
+    for port in "${!services[@]}"; do
+        timeout 1 bash -c "echo >/dev/tcp/$host/$port" 2>/dev/null && \
+            printf "${GREEN}%-6s${NC} %-12s OPEN\n" "$port" "${services[$port]}"
+    done | sort -n
+}
+
+# Main
+case "${1:-help}" in
+    local)    local_info ;;
+    scan)     quick_scan "$2" ;;
+    ping)     ping_sweep "$2" ;;
+    arp)      arp -a 2>/dev/null || ip neigh ;;
+    routes)   ip route 2>/dev/null || netstat -rn ;;
+    dns)      dns_enum "$2" ;;
+    whois)    whois "$2" 2>/dev/null | head -50 ;;
+    headers)  http_headers "$2" ;;
+    ssl)      ssl_info "$2" "$3" ;;
+    ports)    common_ports "$2" ;;
+    -v|--version) echo "NullSec Network Recon v${VERSION}" ;;
+    help|-h|--help|*) usage ;;
+esac

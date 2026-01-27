@@ -1,0 +1,278 @@
+#!/bin/bash
+# NullSec Log Analyzer
+# Security-focused log analysis utility
+# License: MIT
+
+VERSION="1.0.0"
+SCRIPT_NAME=$(basename "$0")
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+# Default log locations
+AUTH_LOG="${AUTH_LOG:-/var/log/auth.log}"
+SYSLOG="${SYSLOG:-/var/log/syslog}"
+KERN_LOG="${KERN_LOG:-/var/log/kern.log}"
+SECURE_LOG="${SECURE_LOG:-/var/log/secure}"
+
+usage() {
+    cat << HELP
+${CYAN}NullSec Log Analyzer v${VERSION}${NC}
+
+Usage: $SCRIPT_NAME <command> [options]
+
+Commands:
+  auth                 Analyze authentication logs
+  failed              Show failed login attempts
+  success             Show successful logins
+  ssh                 SSH-specific log analysis
+  sudo                Sudo command history
+  kernel              Kernel message analysis
+  errors              Find error messages across logs
+  timeline <hours>    Events in last N hours (default: 24)
+  users               User activity summary
+  ips                 IP address summary from logs
+  watch <file>        Live log monitoring with highlights
+
+Examples:
+  $SCRIPT_NAME auth
+  $SCRIPT_NAME failed
+  $SCRIPT_NAME timeline 12
+  $SCRIPT_NAME watch /var/log/auth.log
+
+HELP
+}
+
+check_log() {
+    local log="$1"
+    if [[ ! -f "$log" ]]; then
+        # Try alternative locations
+        for alt in "/var/log/secure" "/var/log/messages" "/var/log/auth.log"; do
+            if [[ -f "$alt" ]]; then
+                echo "$alt"
+                return 0
+            fi
+        done
+        return 1
+    fi
+    echo "$log"
+}
+
+auth_analysis() {
+    local log=$(check_log "$AUTH_LOG")
+    [[ -z "$log" ]] && { echo -e "${RED}Auth log not found${NC}"; exit 1; }
+    
+    echo -e "${CYAN}═══ Authentication Log Analysis ═══${NC}\n"
+    echo -e "Log file: $log\n"
+    
+    echo -e "${GREEN}Failed Authentication Summary:${NC}"
+    grep -iE "failed|failure|invalid|error" "$log" 2>/dev/null | \
+        grep -oE "user [a-zA-Z0-9_-]+" | sort | uniq -c | sort -rn | head -10
+    echo ""
+    
+    echo -e "${GREEN}Successful Authentication Summary:${NC}"
+    grep -iE "accepted|succeeded|opened" "$log" 2>/dev/null | \
+        grep -oE "user [a-zA-Z0-9_-]+" | sort | uniq -c | sort -rn | head -10
+    echo ""
+    
+    echo -e "${GREEN}Recent Events (last 20):${NC}"
+    tail -20 "$log"
+}
+
+failed_logins() {
+    local log=$(check_log "$AUTH_LOG")
+    [[ -z "$log" ]] && { echo -e "${RED}Auth log not found${NC}"; exit 1; }
+    
+    echo -e "${CYAN}═══ Failed Login Attempts ═══${NC}\n"
+    
+    echo -e "${GREEN}By Username:${NC}"
+    grep -iE "failed|failure|invalid" "$log" 2>/dev/null | \
+        grep -oE "(user|for) [a-zA-Z0-9_-]+" | sed 's/^[^ ]* //' | \
+        sort | uniq -c | sort -rn | head -15
+    echo ""
+    
+    echo -e "${GREEN}By IP Address:${NC}"
+    grep -iE "failed|failure|invalid" "$log" 2>/dev/null | \
+        grep -oE "[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+" | \
+        sort | uniq -c | sort -rn | head -15
+    echo ""
+    
+    echo -e "${GREEN}Recent Failed Attempts:${NC}"
+    grep -iE "failed|failure|invalid" "$log" 2>/dev/null | tail -15
+}
+
+success_logins() {
+    local log=$(check_log "$AUTH_LOG")
+    [[ -z "$log" ]] && { echo -e "${RED}Auth log not found${NC}"; exit 1; }
+    
+    echo -e "${CYAN}═══ Successful Logins ═══${NC}\n"
+    
+    echo -e "${GREEN}By Username:${NC}"
+    grep -iE "accepted|succeeded|session opened" "$log" 2>/dev/null | \
+        grep -oE "(user|for) [a-zA-Z0-9_-]+" | sed 's/^[^ ]* //' | \
+        sort | uniq -c | sort -rn | head -15
+    echo ""
+    
+    echo -e "${GREEN}Recent Successful Logins:${NC}"
+    grep -iE "accepted|succeeded|session opened" "$log" 2>/dev/null | tail -15
+}
+
+ssh_analysis() {
+    local log=$(check_log "$AUTH_LOG")
+    [[ -z "$log" ]] && { echo -e "${RED}Auth log not found${NC}"; exit 1; }
+    
+    echo -e "${CYAN}═══ SSH Log Analysis ═══${NC}\n"
+    
+    echo -e "${GREEN}SSH Authentication Methods:${NC}"
+    grep "sshd" "$log" 2>/dev/null | \
+        grep -oE "Accepted (password|publickey|keyboard-interactive)" | \
+        sort | uniq -c | sort -rn
+    echo ""
+    
+    echo -e "${GREEN}SSH Failed Attempts by IP:${NC}"
+    grep "sshd.*Failed" "$log" 2>/dev/null | \
+        grep -oE "[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+" | \
+        sort | uniq -c | sort -rn | head -10
+    echo ""
+    
+    echo -e "${GREEN}Invalid SSH Users Attempted:${NC}"
+    grep "sshd.*Invalid user" "$log" 2>/dev/null | \
+        grep -oE "Invalid user [a-zA-Z0-9_-]+" | \
+        sed 's/Invalid user //' | sort | uniq -c | sort -rn | head -10
+    echo ""
+    
+    echo -e "${GREEN}Disconnection Reasons:${NC}"
+    grep "sshd.*Disconnected" "$log" 2>/dev/null | \
+        grep -oE "Disconnected from [^ ]+" | sort | uniq -c | sort -rn | head -5
+}
+
+sudo_history() {
+    local log=$(check_log "$AUTH_LOG")
+    [[ -z "$log" ]] && { echo -e "${RED}Auth log not found${NC}"; exit 1; }
+    
+    echo -e "${CYAN}═══ Sudo Command History ═══${NC}\n"
+    
+    echo -e "${GREEN}Users Running Sudo:${NC}"
+    grep "sudo:" "$log" 2>/dev/null | \
+        grep -oE "sudo: +[a-zA-Z0-9_-]+" | \
+        awk '{print $2}' | sort | uniq -c | sort -rn | head -10
+    echo ""
+    
+    echo -e "${GREEN}Recent Sudo Commands:${NC}"
+    grep "sudo:.*COMMAND=" "$log" 2>/dev/null | tail -20
+}
+
+kernel_analysis() {
+    local log=$(check_log "$KERN_LOG")
+    [[ -z "$log" ]] && log=$(check_log "/var/log/dmesg")
+    [[ -z "$log" ]] && { dmesg 2>/dev/null | tail -50; return; }
+    
+    echo -e "${CYAN}═══ Kernel Messages ═══${NC}\n"
+    
+    echo -e "${GREEN}Errors and Warnings:${NC}"
+    grep -iE "error|warning|fail|critical" "$log" 2>/dev/null | tail -20
+    echo ""
+    
+    echo -e "${GREEN}Security-Related Messages:${NC}"
+    grep -iE "segfault|denied|audit|selinux|apparmor" "$log" 2>/dev/null | tail -15
+}
+
+find_errors() {
+    echo -e "${CYAN}═══ Error Messages Across Logs ═══${NC}\n"
+    
+    for logfile in /var/log/syslog /var/log/messages /var/log/auth.log /var/log/kern.log; do
+        if [[ -f "$logfile" ]]; then
+            local count=$(grep -ciE "error|fail|critical" "$logfile" 2>/dev/null)
+            echo -e "${GREEN}$logfile:${NC} $count errors/failures"
+        fi
+    done
+    
+    echo -e "\n${GREEN}Recent Critical Errors:${NC}"
+    for logfile in /var/log/syslog /var/log/messages; do
+        [[ -f "$logfile" ]] && grep -iE "critical|emergency|alert" "$logfile" 2>/dev/null
+    done | tail -20
+}
+
+timeline_events() {
+    local hours="${1:-24}"
+    local since=$(date -d "$hours hours ago" '+%b %d %H:%M' 2>/dev/null || date -v-${hours}H '+%b %d %H:%M')
+    
+    echo -e "${CYAN}═══ Events in Last $hours Hours ═══${NC}\n"
+    
+    for logfile in /var/log/auth.log /var/log/syslog /var/log/secure; do
+        if [[ -f "$logfile" ]]; then
+            echo -e "${GREEN}From $logfile:${NC}"
+            awk -v since="$since" '$0 >= since' "$logfile" 2>/dev/null | \
+                grep -iE "auth|login|session|sudo|ssh|fail|error" | tail -20
+            echo ""
+        fi
+    done
+}
+
+user_activity() {
+    echo -e "${CYAN}═══ User Activity Summary ═══${NC}\n"
+    
+    echo -e "${GREEN}Current Users:${NC}"
+    who 2>/dev/null
+    echo ""
+    
+    echo -e "${GREEN}Last Logins:${NC}"
+    last -20 2>/dev/null
+    echo ""
+    
+    echo -e "${GREEN}Failed Login Attempts (lastb):${NC}"
+    sudo lastb 2>/dev/null | head -15 || echo "Requires root access"
+}
+
+ip_summary() {
+    local log=$(check_log "$AUTH_LOG")
+    [[ -z "$log" ]] && { echo -e "${RED}Auth log not found${NC}"; exit 1; }
+    
+    echo -e "${CYAN}═══ IP Address Summary ═══${NC}\n"
+    
+    echo -e "${GREEN}All IPs in Auth Log:${NC}"
+    grep -oE "[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+" "$log" 2>/dev/null | \
+        sort | uniq -c | sort -rn | head -20
+}
+
+watch_log() {
+    local logfile="${1:-/var/log/auth.log}"
+    [[ ! -f "$logfile" ]] && { echo -e "${RED}Log file not found: $logfile${NC}"; exit 1; }
+    
+    echo -e "${CYAN}═══ Watching: $logfile ═══${NC}"
+    echo "Press Ctrl+C to stop"
+    echo ""
+    
+    tail -f "$logfile" 2>/dev/null | while read line; do
+        if echo "$line" | grep -qiE "fail|error|invalid|denied"; then
+            echo -e "${RED}$line${NC}"
+        elif echo "$line" | grep -qiE "accepted|success|opened"; then
+            echo -e "${GREEN}$line${NC}"
+        elif echo "$line" | grep -qiE "warning|warn"; then
+            echo -e "${YELLOW}$line${NC}"
+        else
+            echo "$line"
+        fi
+    done
+}
+
+# Main
+case "${1:-help}" in
+    auth)     auth_analysis ;;
+    failed)   failed_logins ;;
+    success)  success_logins ;;
+    ssh)      ssh_analysis ;;
+    sudo)     sudo_history ;;
+    kernel)   kernel_analysis ;;
+    errors)   find_errors ;;
+    timeline) timeline_events "$2" ;;
+    users)    user_activity ;;
+    ips)      ip_summary ;;
+    watch)    watch_log "$2" ;;
+    -v|--version) echo "NullSec Log Analyzer v${VERSION}" ;;
+    help|-h|--help|*) usage ;;
+esac
