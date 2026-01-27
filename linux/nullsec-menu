@@ -1,0 +1,13 @@
+#!/bin/bash
+# NullSec Menu - Application launcher
+THEME="$HOME/.config/rofi/nullsec-menu.rasi"
+setsid /usr/bin/rofi -show drun \
+    -theme "$THEME" \
+    -show-icons \
+    -icon-theme "Papirus-Dark" \
+    -drun-display-format "{name}" \
+    -modi "drun,run,window,power:$HOME/.local/bin/nullsec-power" \
+    -display-drun " Apps" \
+    -display-run " Run" \
+    -display-window " Windows" \
+    -display-power "⏻ Power" &

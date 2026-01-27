@@ -12,7 +12,7 @@ import argparse
 from datetime import datetime
 from typing import List, Dict, Tuple
 
-BANNER = """
+BANNER = r"""
 ╔═══════════════════════════════════════════════════════════════╗
 ║     _   __      ____   _____                                  ║
 ║    / | / /_  __/ / /  / ___/___  _____                        ║

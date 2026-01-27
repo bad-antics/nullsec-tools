@@ -13,7 +13,7 @@ import string
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import Optional, List, Callable
 
-BANNER = """
+BANNER = r"""
 ╔═══════════════════════════════════════════════════════════════╗
 ║     _   __      ____   _____                                  ║
 ║    / | / /_  __/ / /  / ___/___  _____                        ║

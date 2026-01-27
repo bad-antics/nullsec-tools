@@ -14,7 +14,7 @@ from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 from collections import defaultdict
 
-BANNER = """
+BANNER = r"""
 ╔═══════════════════════════════════════════════════════════════╗
 ║     _   __      ____   _____                                  ║
 ║    / | / /_  __/ / /  / ___/___  _____                        ║

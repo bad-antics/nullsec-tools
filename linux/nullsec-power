@@ -1,0 +1,29 @@
+#!/bin/bash
+
+# Power menu options for rofi
+
+if [ -z "$@" ]; then
+    echo " Lock Screen"
+    echo " Log Out"
+    echo " Settings"
+    echo " Restart"
+    echo "⏻ Shutdown"
+else
+    case "$1" in
+        *"Lock"*)
+            mate-screensaver-command -l 2>/dev/null || xdg-screensaver lock
+            ;;
+        *"Log Out"*)
+            mate-session-save --logout-dialog 2>/dev/null
+            ;;
+        *"Settings"*)
+            mate-control-center 2>/dev/null || gnome-control-center
+            ;;
+        *"Restart"*)
+            systemctl reboot
+            ;;
+        *"Shutdown"*)
+            systemctl poweroff
+            ;;
+    esac
+fi

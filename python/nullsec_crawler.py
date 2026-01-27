@@ -21,7 +21,7 @@ except ImportError:
     print("[-] Required: pip install requests beautifulsoup4")
     sys.exit(1)
 
-BANNER = """
+BANNER = r"""
 ╔═══════════════════════════════════════════════════════════════╗
 ║     _   __      ____   _____                                  ║
 ║    / | / /_  __/ / /  / ___/___  _____                        ║

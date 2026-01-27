@@ -14,7 +14,7 @@ import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Set, Dict
 
-BANNER = """
+BANNER = r"""
 ╔═══════════════════════════════════════════════════════════════╗
 ║     _   __      ____   _____              ______              ║
 ║    / | / /_  __/ / /  / ___/___  _____   /_  __/___  ____     ║
