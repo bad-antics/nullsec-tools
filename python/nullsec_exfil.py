@@ -2,7 +2,7 @@
 """
 NullSec Data Exfiltration Toolkit
 Covert data transfer methods for red team operations
-Author: bad-antics | GitHub: bad-antics | Discord: discord.gg/killers
+Author: bad-antics | GitHub: bad-antics | Discord: x.com/AnonAntics
 
 WARNING: For authorized penetration testing only!
 """
@@ -27,7 +27,7 @@ BANNER = """
 ║     ██║ ╚████║╚██████╔╝███████╗███████╗███████║███████╗   ║
 ║     ╚═╝  ╚═══╝ ╚═════╝ ╚══════╝╚══════╝╚══════╝╚══════╝   ║
 ║               DATA EXFILTRATION TOOLKIT                    ║
-║            bad-antics | bad-antics | discord.gg/killers  ║
+║            bad-antics | bad-antics | x.com/AnonAntics  ║
 ╚═══════════════════════════════════════════════════════════╝
 """
 

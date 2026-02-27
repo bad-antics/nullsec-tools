@@ -1,7 +1,7 @@
 // NullSec - C++ Network Probe (Fast Scanner)
 // Part of the NullSec Framework
 // https://github.com/bad-antics | @AnonAntics
-// discord.gg/killers
+// x.com/AnonAntics
 
 #include <iostream>
 #include <vector>
@@ -27,7 +27,7 @@ const char* BANNER = R"(
 ╔═══════════════════════════════════════════════════════╗
 ║          NullSec - C++ Network Probe                  ║
 ║              @AnonAntics | NullSec                    ║
-║         discord.gg/killers for keys                   ║
+║         x.com/AnonAntics for keys                   ║
 ╚═══════════════════════════════════════════════════════╝
 )";
 
@@ -222,7 +222,7 @@ void printUsage() {
     cout << "    -v, --verbose        Verbose output" << endl;
     cout << "    -h, --help           Show this help" << endl;
     cout << endl;
-    cout << "Get more tools: discord.gg/killers" << endl;
+    cout << "Get more tools: x.com/AnonAntics" << endl;
 }
 
 int main(int argc, char* argv[]) {

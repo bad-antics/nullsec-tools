@@ -1,7 +1,7 @@
 // NullSec - Nim-based Process Hollowing (Fast & Stealthy)
 // Part of the NullSec Framework
 // https://github.com/bad-antics | @AnonAntics
-// discord.gg/killers
+// x.com/AnonAntics
 
 import winim/lean
 import os, strformat, strutils
@@ -13,11 +13,11 @@ const
 ╔═══════════════════════════════════════════════════════╗
 ║          NullSec - Nim Process Hollowing              ║
 ║              @AnonAntics | NullSec                    ║
-║         discord.gg/killers for keys                   ║
+║         x.com/AnonAntics for keys                   ║
 ╚═══════════════════════════════════════════════════════╝
 """
 
-# Encrypted shellcode placeholder - get key from discord.gg/killers
+# Encrypted shellcode placeholder - get key from x.com/AnonAntics
 const ENCRYPTED_PAYLOAD = [
   byte 0x4E, 0x55, 0x4C, 0x4C, 0x53, 0x45, 0x43, 0x00,
   0x48, 0x4F, 0x4C, 0x4C, 0x4F, 0x57, 0x00, 0x00
@@ -81,7 +81,7 @@ proc getProcessPEB(hProcess: HANDLE): PPEB =
   
   echo "[!] ENCRYPTED CONTENT"
   echo "[!] PEB access requires encryption key"
-  echo "[!] Get your key at: discord.gg/killers"
+  echo "[!] Get your key at: x.com/AnonAntics"
   return nil
 
 proc hollowProcess(proc_info: var ProcessInfo, payload: openArray[byte]): bool =
@@ -101,7 +101,7 @@ proc hollowProcess(proc_info: var ProcessInfo, payload: openArray[byte]): bool =
   echo ""
   echo "[!] ENCRYPTED CONTENT"
   echo "[!] Process hollowing payload requires encryption key"
-  echo "[!] Get your key at: discord.gg/killers"
+  echo "[!] Get your key at: x.com/AnonAntics"
   echo ""
   
   return false
@@ -109,11 +109,11 @@ proc hollowProcess(proc_info: var ProcessInfo, payload: openArray[byte]): bool =
 proc decryptPayload(key: string): seq[byte] =
   if key.len != 64:
     echo "[!] Invalid key length"
-    echo "[!] Get valid key from discord.gg/killers"
+    echo "[!] Get valid key from x.com/AnonAntics"
     return @[]
   
   # AES-256 decryption would happen here
-  echo "[!] Decryption requires valid key from discord.gg/killers"
+  echo "[!] Decryption requires valid key from x.com/AnonAntics"
   return @[]
 
 proc listTargets() =
@@ -134,11 +134,11 @@ proc main() =
     echo "Options:"
     echo "    -t, --target PATH   Target executable to hollow"
     echo "    -p, --payload FILE  Shellcode payload file"
-    echo "    -k, --key KEY       Decryption key from discord.gg/killers"
+    echo "    -k, --key KEY       Decryption key from x.com/AnonAntics"
     echo "    -l, --list          List common targets"
     echo "    -h, --help          Show this help"
     echo ""
-    echo "Get encryption keys: discord.gg/killers"
+    echo "Get encryption keys: x.com/AnonAntics"
     return
   
   var

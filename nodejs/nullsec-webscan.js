@@ -2,7 +2,7 @@
 /**
  * NullSec Web Scanner
  * Web application vulnerability scanner
- * Author: bad-antics | GitHub: bad-antics | Discord: discord.gg/killers
+ * Author: bad-antics | GitHub: bad-antics | Discord: x.com/AnonAntics
  */
 
 const https = require('https');
@@ -19,7 +19,7 @@ const BANNER = `
 ║     ██║ ╚████║╚██████╔╝███████╗███████╗███████║███████╗   ║
 ║     ╚═╝  ╚═══╝ ╚═════╝ ╚══════╝╚══════╝╚══════╝╚══════╝   ║
 ║                 WEB SCANNER (Node.js)                      ║
-║            bad-antics | @AnonAntics | discord.gg/killers  ║
+║            bad-antics | @AnonAntics | x.com/AnonAntics  ║
 ╚═══════════════════════════════════════════════════════════╝
 `;
 
