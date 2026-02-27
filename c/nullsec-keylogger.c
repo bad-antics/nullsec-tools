@@ -1,7 +1,7 @@
 /*
  * NullSec Keylogger (Educational/Research Only)
  * Linux X11 keyboard event monitor
- * Author: bad-antics | GitHub: bad-antics | Discord: x.com/AnonAntics
+ * Author: bad-antics | GitHub: bad-antics | Twitter: x.com/AnonAntics
  * 
  * WARNING: For authorized security testing and educational purposes only.
  * Unauthorized use is illegal. Always obtain proper authorization.

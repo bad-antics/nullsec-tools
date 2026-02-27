@@ -1,6 +1,6 @@
 // NullSec Hash Cracker
 // Multi-threaded hash cracking tool written in Rust
-// Author: bad-antics | GitHub: bad-antics | Discord: x.com/AnonAntics
+// Author: bad-antics | GitHub: bad-antics | Twitter: x.com/AnonAntics
 
 use std::env;
 use std::fs::File;

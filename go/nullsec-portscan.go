@@ -1,6 +1,6 @@
 // NullSec Port Scanner
 // High-performance concurrent port scanner written in Go
-// Author: bad-antics | GitHub: bad-antics | Discord: x.com/AnonAntics
+// Author: bad-antics | GitHub: bad-antics | Twitter: x.com/AnonAntics
 
 package main
 

@@ -2,7 +2,7 @@
 /**
  * NullSec Web Scanner
  * Web application vulnerability scanner
- * Author: bad-antics | GitHub: bad-antics | Discord: x.com/AnonAntics
+ * Author: bad-antics | GitHub: bad-antics | Twitter: x.com/AnonAntics
  */
 
 const https = require('https');

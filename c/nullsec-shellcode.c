@@ -1,7 +1,7 @@
 /*
  * NullSec Shellcode Loader
  * Memory injection and shellcode execution toolkit
- * Author: bad-antics | GitHub: bad-antics | Discord: x.com/AnonAntics
+ * Author: bad-antics | GitHub: bad-antics | Twitter: x.com/AnonAntics
  * 
  * WARNING: For authorized security testing and research only.
  * 
