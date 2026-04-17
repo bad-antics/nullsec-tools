@@ -22,7 +22,7 @@ jobs:
             let response = '';
             let labels = [];
             
-            if (title.includes('bug') || title.includes('error')) {
+            if (/\bbug\b/.test(title) || /\berror\b/.test(title)) {
               labels = ['bug'];
               response = `## 🐛 Bug Report\n\nThanks @${author}!\n\n---\n*🤖 NullSec Bot*`;
             } else if (title.includes('feature')) {
